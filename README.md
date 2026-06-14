@@ -5,6 +5,11 @@ two harnesses — the `mu` runtime and claude-code (cc) — in one place. Config
 **installed tools only** (no `uv`/pip downloads, no new jails), the operator's
 py-polars substrate. Built 2026-06-14.
 
+![mu-analytics dashboard](docs/dashboard.png)
+
+> *Screenshot rendered with **synthetic demo data** (`MU_ANALYTICS_DEMO=1 ./run gen_dashboard.py`) —
+> every figure shown is fabricated for illustration, not real usage.*
+
 > **For the next agent:** read the "Hard-won knowledge" section before changing
 > anything. Most of what looks arbitrary here was paid for — don't re-derive it.
 
@@ -13,7 +18,7 @@ py-polars substrate. Built 2026-06-14.
 ## Run it
 
 ```sh
-cd ~/src/mu-analytics
+cd mu-analytics
 cp config.example.toml config.toml   # first time only: then edit [paths] for your machine
 ./run cc_telemetry.py      # emit cc sessions -> mu-core TaskTelemetry events (all cc accounts, from config)
 ~/.local/bin/mu analytics compact --events-dir data/cc-events --db data/cc-telemetry.sqlite
@@ -40,7 +45,8 @@ fails there. That shadowing is the classic "I installed it and it's not found" t
 | `cc_telemetry.py` | cc transcript → mu-core `TaskTelemetry` (+ `tool_call`) JSONL, per session |
 | `cost.py` | read both sinks via stdlib `sqlite3`→polars, join `[rates]`, compute cost, split by `cost_kind`, hand-check |
 | `sample_data.py` | `build()` assembles the dashboard `DATA` contract from the sink; `./run sample_data.py` prints it as JSON |
-| `gen_dashboard.py` | inject live `DATA` into `index.html` → self-contained `dist/`; cron-regenerable |
+| `demo_data.py` | same contract shape, **fabricated** numbers — `MU_ANALYTICS_DEMO=1` uses it to render the screenshot above without exposing real usage |
+| `gen_dashboard.py` | inject live `DATA` into `index.html` → self-contained `dist/`; cron-regenerable (honors `MU_ANALYTICS_DEMO`) |
 | `index.html` + `assets/` | dashboard shell (vendored ECharts + fonts); placeholder data behind `/*BEGIN_DATA*/…/*END_DATA*/` markers |
 | `dist/` | generated dashboard with **real** data — gitignored; point nginx here |
 | `lib/mu_anthropic_py.*.so` | the typed Anthropic parser (built artifact — see "Rebuilding"); gitignored |
@@ -161,7 +167,7 @@ cd ~/src/public_github/mu/crates/providers/mu-anthropic-py
 maturin build --release --interpreter /usr/local/bin/python3.11   # ~30s
 W=$(find ~/src/public_github/mu/target/wheels -name 'mu_anthropic_py*.whl' | head -1)
 /usr/local/bin/python3.11 -c "import zipfile,sys;zipfile.ZipFile(sys.argv[1]).extractall('/tmp/maw')" "$W"
-cp /tmp/maw/mu_anthropic_py*.so ~/src/mu-analytics/lib/
+cp /tmp/maw/mu_anthropic_py*.so /path/to/mu-analytics/lib/
 ```
 
 No system install / no pip — `cc_telemetry.py` adds `lib/` to `sys.path` itself.
@@ -174,7 +180,7 @@ No system install / no pip — `cc_telemetry.py` adds `lib/` to `sys.path` itsel
   cost-by-kind / by-model, cache-read-dominates composition, outcomes,
   hallucination-by-model, cost+degradation trend, and a sortable, drill-down
   session table — `as_of`-stamped. Serve `dist/` via nginx;
-  `*/15 * * * * ~/src/mu-analytics/run gen_dashboard.py` keeps it live.
+  `@hourly /path/to/mu-analytics/run gen_dashboard.py` keeps it live.
   Caveats baked into the page: `degradation` + hallucination are **real but
   degenerate** (the commit-enricher gap classifies ~everything
   `narrative_no_action`; the dashboard says so); `flagged` is always false

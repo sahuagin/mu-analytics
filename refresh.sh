@@ -5,7 +5,7 @@
 # page regenerate rather than going stale. Logs to wherever cron redirects it.
 #
 # cron:
-#   @hourly $HOME/src/mu-analytics/refresh.sh >> $HOME/mu-stats/cron.log 2>&1
+#   @hourly /path/to/mu-analytics/refresh.sh >> /path/to/cron.log 2>&1
 set -u
 # cron runs with a bare PATH; tq lives in ~/.cargo/bin, mu in ~/.local/bin.
 export PATH="$HOME/.cargo/bin:$HOME/.local/bin:/usr/local/bin:$PATH"

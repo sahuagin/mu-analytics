@@ -17,7 +17,12 @@ import re
 import json
 import shutil
 
-from sample_data import build
+# MU_ANALYTICS_DEMO=1 swaps real sink data for the fabricated demo set
+# (used to render the README screenshot without exposing real usage).
+if os.environ.get("MU_ANALYTICS_DEMO"):
+    from demo_data import build
+else:
+    from sample_data import build
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
