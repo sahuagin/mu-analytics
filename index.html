@@ -1,0 +1,1282 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>mu · agent session analytics</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
+<style>/* cyrillic-ext */
+@font-face {
+  font-family: 'Hanken Grotesk';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("assets/33e47591-022e-442c-847f-732ddb4b01f4.woff2") format('woff2');
+  unicode-range: U+0460-052F, U+1C80-1C8A, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+}
+/* vietnamese */
+@font-face {
+  font-family: 'Hanken Grotesk';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("assets/e2c9f058-9ad2-4539-8c60-fbdd2089214c.woff2") format('woff2');
+  unicode-range: U+0102-0103, U+0110-0111, U+0128-0129, U+0168-0169, U+01A0-01A1, U+01AF-01B0, U+0300-0301, U+0303-0304, U+0308-0309, U+0323, U+0329, U+1EA0-1EF9, U+20AB;
+}
+/* latin-ext */
+@font-face {
+  font-family: 'Hanken Grotesk';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("assets/c9ff4bb2-876a-4722-a140-a94b04db81a5.woff2") format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+/* latin */
+@font-face {
+  font-family: 'Hanken Grotesk';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("assets/d43693df-546e-47a8-9773-a809483e1de6.woff2") format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+/* cyrillic-ext */
+@font-face {
+  font-family: 'Hanken Grotesk';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("assets/33e47591-022e-442c-847f-732ddb4b01f4.woff2") format('woff2');
+  unicode-range: U+0460-052F, U+1C80-1C8A, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+}
+/* vietnamese */
+@font-face {
+  font-family: 'Hanken Grotesk';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("assets/e2c9f058-9ad2-4539-8c60-fbdd2089214c.woff2") format('woff2');
+  unicode-range: U+0102-0103, U+0110-0111, U+0128-0129, U+0168-0169, U+01A0-01A1, U+01AF-01B0, U+0300-0301, U+0303-0304, U+0308-0309, U+0323, U+0329, U+1EA0-1EF9, U+20AB;
+}
+/* latin-ext */
+@font-face {
+  font-family: 'Hanken Grotesk';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("assets/c9ff4bb2-876a-4722-a140-a94b04db81a5.woff2") format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+/* latin */
+@font-face {
+  font-family: 'Hanken Grotesk';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("assets/d43693df-546e-47a8-9773-a809483e1de6.woff2") format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+/* cyrillic-ext */
+@font-face {
+  font-family: 'Hanken Grotesk';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("assets/33e47591-022e-442c-847f-732ddb4b01f4.woff2") format('woff2');
+  unicode-range: U+0460-052F, U+1C80-1C8A, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+}
+/* vietnamese */
+@font-face {
+  font-family: 'Hanken Grotesk';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("assets/e2c9f058-9ad2-4539-8c60-fbdd2089214c.woff2") format('woff2');
+  unicode-range: U+0102-0103, U+0110-0111, U+0128-0129, U+0168-0169, U+01A0-01A1, U+01AF-01B0, U+0300-0301, U+0303-0304, U+0308-0309, U+0323, U+0329, U+1EA0-1EF9, U+20AB;
+}
+/* latin-ext */
+@font-face {
+  font-family: 'Hanken Grotesk';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("assets/c9ff4bb2-876a-4722-a140-a94b04db81a5.woff2") format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+/* latin */
+@font-face {
+  font-family: 'Hanken Grotesk';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("assets/d43693df-546e-47a8-9773-a809483e1de6.woff2") format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+/* cyrillic-ext */
+@font-face {
+  font-family: 'Hanken Grotesk';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("assets/33e47591-022e-442c-847f-732ddb4b01f4.woff2") format('woff2');
+  unicode-range: U+0460-052F, U+1C80-1C8A, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+}
+/* vietnamese */
+@font-face {
+  font-family: 'Hanken Grotesk';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("assets/e2c9f058-9ad2-4539-8c60-fbdd2089214c.woff2") format('woff2');
+  unicode-range: U+0102-0103, U+0110-0111, U+0128-0129, U+0168-0169, U+01A0-01A1, U+01AF-01B0, U+0300-0301, U+0303-0304, U+0308-0309, U+0323, U+0329, U+1EA0-1EF9, U+20AB;
+}
+/* latin-ext */
+@font-face {
+  font-family: 'Hanken Grotesk';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("assets/c9ff4bb2-876a-4722-a140-a94b04db81a5.woff2") format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+/* latin */
+@font-face {
+  font-family: 'Hanken Grotesk';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("assets/d43693df-546e-47a8-9773-a809483e1de6.woff2") format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+/* cyrillic-ext */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("assets/4542403d-b6db-4eb9-95fd-6c6ad21a7ee6.woff2") format('woff2');
+  unicode-range: U+0460-052F, U+1C80-1C8A, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+}
+/* cyrillic */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("assets/8db2a361-3222-431e-8b79-41fe78485a92.woff2") format('woff2');
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+/* greek */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("assets/c4f5bc61-eb0f-402b-b13b-7f5eca1a129c.woff2") format('woff2');
+  unicode-range: U+0370-0377, U+037A-037F, U+0384-038A, U+038C, U+038E-03A1, U+03A3-03FF;
+}
+/* vietnamese */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("assets/bf56ce24-92a9-4d2f-a93b-3ab12afdd7c8.woff2") format('woff2');
+  unicode-range: U+0102-0103, U+0110-0111, U+0128-0129, U+0168-0169, U+01A0-01A1, U+01AF-01B0, U+0300-0301, U+0303-0304, U+0308-0309, U+0323, U+0329, U+1EA0-1EF9, U+20AB;
+}
+/* latin-ext */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("assets/ad6b187a-3d04-409d-a59f-78559615e08c.woff2") format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+/* latin */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("assets/32555f09-1891-4391-af8b-ec2d520fd564.woff2") format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+/* cyrillic-ext */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("assets/4542403d-b6db-4eb9-95fd-6c6ad21a7ee6.woff2") format('woff2');
+  unicode-range: U+0460-052F, U+1C80-1C8A, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+}
+/* cyrillic */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("assets/8db2a361-3222-431e-8b79-41fe78485a92.woff2") format('woff2');
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+/* greek */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("assets/c4f5bc61-eb0f-402b-b13b-7f5eca1a129c.woff2") format('woff2');
+  unicode-range: U+0370-0377, U+037A-037F, U+0384-038A, U+038C, U+038E-03A1, U+03A3-03FF;
+}
+/* vietnamese */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("assets/bf56ce24-92a9-4d2f-a93b-3ab12afdd7c8.woff2") format('woff2');
+  unicode-range: U+0102-0103, U+0110-0111, U+0128-0129, U+0168-0169, U+01A0-01A1, U+01AF-01B0, U+0300-0301, U+0303-0304, U+0308-0309, U+0323, U+0329, U+1EA0-1EF9, U+20AB;
+}
+/* latin-ext */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("assets/ad6b187a-3d04-409d-a59f-78559615e08c.woff2") format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+/* latin */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("assets/32555f09-1891-4391-af8b-ec2d520fd564.woff2") format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+/* cyrillic-ext */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("assets/4542403d-b6db-4eb9-95fd-6c6ad21a7ee6.woff2") format('woff2');
+  unicode-range: U+0460-052F, U+1C80-1C8A, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+}
+/* cyrillic */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("assets/8db2a361-3222-431e-8b79-41fe78485a92.woff2") format('woff2');
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+/* greek */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("assets/c4f5bc61-eb0f-402b-b13b-7f5eca1a129c.woff2") format('woff2');
+  unicode-range: U+0370-0377, U+037A-037F, U+0384-038A, U+038C, U+038E-03A1, U+03A3-03FF;
+}
+/* vietnamese */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("assets/bf56ce24-92a9-4d2f-a93b-3ab12afdd7c8.woff2") format('woff2');
+  unicode-range: U+0102-0103, U+0110-0111, U+0128-0129, U+0168-0169, U+01A0-01A1, U+01AF-01B0, U+0300-0301, U+0303-0304, U+0308-0309, U+0323, U+0329, U+1EA0-1EF9, U+20AB;
+}
+/* latin-ext */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("assets/ad6b187a-3d04-409d-a59f-78559615e08c.woff2") format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+/* latin */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("assets/32555f09-1891-4391-af8b-ec2d520fd564.woff2") format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+/* cyrillic-ext */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("assets/4542403d-b6db-4eb9-95fd-6c6ad21a7ee6.woff2") format('woff2');
+  unicode-range: U+0460-052F, U+1C80-1C8A, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+}
+/* cyrillic */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("assets/8db2a361-3222-431e-8b79-41fe78485a92.woff2") format('woff2');
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+/* greek */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("assets/c4f5bc61-eb0f-402b-b13b-7f5eca1a129c.woff2") format('woff2');
+  unicode-range: U+0370-0377, U+037A-037F, U+0384-038A, U+038C, U+038E-03A1, U+03A3-03FF;
+}
+/* vietnamese */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("assets/bf56ce24-92a9-4d2f-a93b-3ab12afdd7c8.woff2") format('woff2');
+  unicode-range: U+0102-0103, U+0110-0111, U+0128-0129, U+0168-0169, U+01A0-01A1, U+01AF-01B0, U+0300-0301, U+0303-0304, U+0308-0309, U+0323, U+0329, U+1EA0-1EF9, U+20AB;
+}
+/* latin-ext */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("assets/ad6b187a-3d04-409d-a59f-78559615e08c.woff2") format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+/* latin */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("assets/32555f09-1891-4391-af8b-ec2d520fd564.woff2") format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+</style>
+<script src="assets/echarts.min.js"></script>
+<style>
+  :root{
+    --bg:#0b0d10;
+    --panel:#12161d;
+    --panel-2:#161b23;
+    --panel-3:#1a212b;
+    --border:#232b37;
+    --border-soft:#1b222c;
+    --fg:#e8ecf1;
+    --fg-dim:#98a2b0;
+    --fg-mute:#5f6a78;
+    --accent:#33c9a3;
+    --accent-2:#2bb593;
+    --accent-soft:rgba(51,201,163,0.12);
+    --accent-line:rgba(51,201,163,0.30);
+    --amber:#d6a14e;
+    --amber-soft:rgba(214,161,78,0.12);
+    --red:#d8696b;
+    --red-soft:rgba(216,105,107,0.12);
+    --blue:#7d93c9;
+    --violet:#9a86c4;
+    --slate:#6c7787;
+    --shadow:0 1px 0 rgba(255,255,255,0.02) inset, 0 8px 24px -16px rgba(0,0,0,0.6);
+    --mono:'JetBrains Mono',ui-monospace,'SF Mono',Menlo,monospace;
+    --sans:'Hanken Grotesk',system-ui,-apple-system,Segoe UI,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:var(--bg);
+    color:var(--fg);
+    font-family:var(--sans);
+    font-size:14px;
+    line-height:1.45;
+    -webkit-font-smoothing:antialiased;
+    text-rendering:optimizeLegibility;
+  }
+  body::before{
+    content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+    background:
+      radial-gradient(1200px 600px at 80% -10%, rgba(51,201,163,0.05), transparent 60%),
+      radial-gradient(900px 500px at 0% 0%, rgba(125,147,201,0.04), transparent 55%);
+  }
+  .wrap{position:relative;z-index:1;max-width:1500px;margin:0 auto;padding:26px 30px 80px}
+  .mono{font-family:var(--mono);font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1}
+  .num{font-family:var(--mono);font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1;letter-spacing:-0.01em}
+  .right{text-align:right}
+  .dim{color:var(--fg-dim)}
+  .mute{color:var(--fg-mute)}
+
+  /* ---------- header ---------- */
+  header.top{
+    display:flex;align-items:flex-start;justify-content:space-between;gap:24px;
+    padding-bottom:22px;margin-bottom:24px;border-bottom:1px solid var(--border);
+  }
+  .brand{display:flex;align-items:center;gap:13px}
+  .mark{
+    width:34px;height:34px;border-radius:9px;flex:0 0 auto;position:relative;
+    background:linear-gradient(150deg,#1c2530,#12161d);border:1px solid var(--border);
+    display:grid;place-items:center;
+  }
+  .mark::after{content:"";width:13px;height:13px;border-radius:4px;transform:rotate(45deg);
+    background:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+  .brand h1{font-size:16px;font-weight:600;margin:0;letter-spacing:-0.01em}
+  .brand .sub{font-size:12px;color:var(--fg-mute);margin-top:1px}
+  .brand .sub b{color:var(--accent);font-weight:600}
+
+  .asof{display:flex;flex-direction:column;align-items:flex-end;gap:6px}
+  .asof .label{font-size:10.5px;letter-spacing:0.14em;text-transform:uppercase;color:var(--fg-mute)}
+  .asof .stamp{display:flex;align-items:center;gap:9px;font-size:15px;font-weight:500}
+  .asof .stamp .t{font-family:var(--mono);font-size:14.5px;letter-spacing:-0.01em}
+  .live{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--accent);
+    font-weight:600;letter-spacing:0.04em}
+  .pulse{width:7px;height:7px;border-radius:50%;background:var(--accent);position:relative}
+  .pulse::after{content:"";position:absolute;inset:-4px;border-radius:50%;
+    background:var(--accent);opacity:.5;animation:pulse 2s ease-out infinite}
+  @keyframes pulse{0%{transform:scale(.6);opacity:.5}100%{transform:scale(2.4);opacity:0}}
+  .asof .note{font-size:11px;color:var(--fg-mute);max-width:260px;text-align:right}
+
+  /* ---------- reconciliation banner ---------- */
+  .recon{
+    display:flex;align-items:center;gap:0;flex-wrap:wrap;
+    background:var(--panel);border:1px solid var(--border);border-radius:12px;
+    padding:13px 6px;margin-bottom:16px;box-shadow:var(--shadow);
+  }
+  .recon .cell{display:flex;flex-direction:column;gap:2px;padding:2px 20px;flex:1;min-width:150px}
+  .recon .cell + .cell{border-left:1px solid var(--border)}
+  .recon .k{font-size:10.5px;letter-spacing:0.1em;text-transform:uppercase;color:var(--fg-mute);
+    display:flex;align-items:center;gap:7px}
+  .recon .v{font-family:var(--mono);font-size:19px;font-weight:600;letter-spacing:-0.02em}
+  .recon .v small{font-size:12px;color:var(--fg-mute);font-weight:400}
+  .dot{width:8px;height:8px;border-radius:2px;flex:0 0 auto}
+  .dot.solid{background:var(--accent)}
+  .dot.ring{background:transparent;border:1.5px dashed var(--slate)}
+  .dot.free{background:var(--fg-mute);opacity:.5}
+
+  /* ---------- KPI strip ---------- */
+  .kpis{display:grid;grid-template-columns:1.15fr 1.15fr .85fr .85fr;gap:14px;margin-bottom:24px}
+  .kpi{
+    background:var(--panel);border:1px solid var(--border);border-radius:14px;
+    padding:18px 19px 17px;position:relative;overflow:hidden;box-shadow:var(--shadow);
+  }
+  .kpi .top{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+  .kpi .name{font-size:11px;letter-spacing:0.12em;text-transform:uppercase;font-weight:600;
+    display:flex;align-items:center;gap:8px;color:var(--fg-dim)}
+  .kpi .tag{font-size:9.5px;letter-spacing:0.08em;text-transform:uppercase;font-weight:700;
+    padding:3px 7px;border-radius:5px;line-height:1}
+  .kpi .big{font-family:var(--mono);font-weight:700;letter-spacing:-0.03em;line-height:1;
+    font-size:38px;display:flex;align-items:baseline;gap:4px}
+  .kpi .big .cur{font-size:22px;font-weight:600;opacity:.7}
+  .kpi .meta{margin-top:13px;font-size:12px;color:var(--fg-dim);display:flex;align-items:center;
+    gap:8px;flex-wrap:wrap}
+  .kpi .meta .b{font-family:var(--mono);color:var(--fg);font-weight:500}
+  .kpi .bar{height:4px;border-radius:3px;background:var(--panel-3);margin-top:14px;overflow:hidden}
+  .kpi .bar i{display:block;height:100%;border-radius:3px}
+
+  /* billed = real money */
+  .kpi.billed{border-color:rgba(51,201,163,0.4)}
+  .kpi.billed::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--accent)}
+  .kpi.billed .name{color:var(--accent)}
+  .kpi.billed .big{color:var(--accent)}
+  .kpi.billed .tag{background:var(--accent-soft);color:var(--accent)}
+  .kpi.billed .bar i{background:var(--accent)}
+
+  /* subscription = notional, unbilled */
+  .kpi.subs{background:repeating-linear-gradient(135deg,var(--panel),var(--panel) 9px,var(--panel-2) 9px,var(--panel-2) 10px);
+    border-style:dashed;border-color:var(--border)}
+  .kpi.subs .big{color:var(--fg-dim)}
+  .kpi.subs .approx{color:var(--slate);font-weight:500}
+  .kpi.subs .tag{background:rgba(125,147,201,0.12);color:var(--blue)}
+  .kpi.subs .name{color:var(--blue)}
+  .kpi.subs .bar i{background:var(--slate);opacity:.6}
+
+  .kpi.free .big{color:var(--fg-mute)}
+  .kpi.free .name{color:var(--fg-mute)}
+  .kpi.free .tag{background:var(--panel-3);color:var(--fg-mute)}
+
+  .kpi.total .big{color:var(--fg);font-size:32px}
+  .kpi.total .name{color:var(--fg-dim)}
+  .kpi.total .tag{background:var(--panel-3);color:var(--fg-dim)}
+
+  /* ---------- panels / grid ---------- */
+  .grid{display:grid;grid-template-columns:repeat(12,1fr);gap:16px}
+  .panel{
+    background:var(--panel);border:1px solid var(--border);border-radius:14px;
+    padding:17px 18px 16px;box-shadow:var(--shadow);display:flex;flex-direction:column;min-width:0;
+  }
+  .col-3{grid-column:span 3}
+  .col-4{grid-column:span 4}
+  .col-5{grid-column:span 5}
+  .col-6{grid-column:span 6}
+  .col-7{grid-column:span 7}
+  .col-8{grid-column:span 8}
+  .col-12{grid-column:span 12}
+  .span-row{margin-top:16px}
+
+  .ph{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:4px}
+  .ph .ttl{font-size:13px;font-weight:600;letter-spacing:-0.005em}
+  .ph .desc{font-size:11.5px;color:var(--fg-mute);margin-top:2px;max-width:90%}
+  .ph .hint{font-size:10.5px;letter-spacing:0.08em;text-transform:uppercase;color:var(--fg-mute);
+    font-family:var(--mono);white-space:nowrap}
+  .chart{width:100%;min-height:0}
+
+  .legend{display:flex;flex-wrap:wrap;gap:6px 16px;margin-top:10px}
+  .legend .it{display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--fg-dim)}
+  .legend .sw{width:9px;height:9px;border-radius:2px;flex:0 0 auto}
+  .legend .it b{font-family:var(--mono);color:var(--fg);font-weight:500;margin-left:auto}
+
+  /* composition table */
+  .comp-table{width:100%;border-collapse:collapse;margin-top:6px}
+  .comp-table td{padding:8px 0;border-bottom:1px solid var(--border-soft);font-size:12.5px}
+  .comp-table tr:last-child td{border-bottom:none}
+  .comp-table .lab{display:flex;align-items:center;gap:9px;color:var(--fg-dim)}
+  .comp-table .lab .sw{width:9px;height:9px;border-radius:2px}
+  .comp-table .v{font-family:var(--mono);text-align:right;color:var(--fg);font-weight:500}
+  .comp-table .pc{font-family:var(--mono);text-align:right;color:var(--fg-mute);width:54px;font-size:11.5px}
+  .comp-bar{display:flex;height:13px;border-radius:4px;overflow:hidden;margin:4px 0 12px;
+    background:var(--panel-3);border:1px solid var(--border)}
+  .comp-bar i{height:100%}
+  .comp-key{display:flex;align-items:baseline;gap:8px;margin-top:auto;padding-top:13px}
+  .comp-key .big{font-family:var(--mono);font-size:24px;font-weight:700;color:var(--accent);letter-spacing:-0.02em}
+  .comp-key .txt{font-size:11.5px;color:var(--fg-dim);line-height:1.35}
+
+  /* outcome bars */
+  .obars{display:flex;flex-direction:column;gap:10px;margin-top:4px}
+  .obar .row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:5px}
+  .obar .nm{font-size:12.5px;display:flex;align-items:center;gap:8px}
+  .obar .nm .sw{width:9px;height:9px;border-radius:2px}
+  .obar .ct{font-family:var(--mono);font-size:12px;color:var(--fg-dim)}
+  .obar .ct b{color:var(--fg);font-weight:600}
+  .obar .track{height:7px;border-radius:4px;background:var(--panel-3);overflow:hidden}
+  .obar .track i{display:block;height:100%;border-radius:4px}
+
+  /* caveat callout */
+  .caveat{
+    background:var(--amber-soft);border:1px solid rgba(214,161,78,0.3);border-radius:11px;
+    padding:13px 14px;display:flex;gap:11px;align-items:flex-start;
+  }
+  .caveat .ic{width:20px;height:20px;border-radius:6px;flex:0 0 auto;display:grid;place-items:center;
+    background:rgba(214,161,78,0.18);color:var(--amber);font-weight:700;font-size:13px;
+    font-family:var(--mono);margin-top:1px}
+  .caveat .body{font-size:12px;line-height:1.5;color:var(--fg-dim)}
+  .caveat .body b{color:var(--amber);font-weight:600}
+
+  /* ---------- table ---------- */
+  .tbl-tools{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .seg{display:flex;background:var(--panel-2);border:1px solid var(--border);border-radius:8px;padding:2px}
+  .seg button{background:none;border:none;color:var(--fg-mute);font-family:var(--sans);
+    font-size:11.5px;font-weight:500;padding:5px 11px;border-radius:6px;cursor:pointer;
+    transition:.12s;white-space:nowrap}
+  .seg button:hover{color:var(--fg-dim)}
+  .seg button.on{background:var(--panel-3);color:var(--fg);box-shadow:0 1px 2px rgba(0,0,0,.3)}
+  .toggle{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--fg-dim);cursor:pointer;
+    user-select:none}
+  .toggle .sw2{width:34px;height:19px;border-radius:11px;background:var(--panel-3);position:relative;
+    border:1px solid var(--border);transition:.15s}
+  .toggle .sw2::after{content:"";position:absolute;top:1.5px;left:1.5px;width:14px;height:14px;
+    border-radius:50%;background:var(--fg-mute);transition:.15s}
+  .toggle.on .sw2{background:var(--accent-soft);border-color:var(--accent-line)}
+  .toggle.on .sw2::after{transform:translateX(15px);background:var(--accent)}
+
+  table.sess{width:100%;border-collapse:collapse;margin-top:14px;font-size:13px}
+  table.sess thead th{
+    text-align:left;font-size:10.5px;letter-spacing:0.08em;text-transform:uppercase;
+    color:var(--fg-mute);font-weight:600;padding:0 12px 9px;border-bottom:1px solid var(--border);
+    cursor:pointer;white-space:nowrap;user-select:none;
+  }
+  table.sess thead th.r{text-align:right}
+  table.sess thead th:hover{color:var(--fg-dim)}
+  table.sess thead th .ar{opacity:.4;font-size:9px;margin-left:3px}
+  table.sess thead th.act .ar{opacity:1;color:var(--accent)}
+  table.sess tbody td{padding:11px 12px;border-bottom:1px solid var(--border-soft);vertical-align:middle}
+  table.sess tbody tr.main{cursor:pointer;transition:background .12s}
+  table.sess tbody tr.main:hover{background:var(--panel-2)}
+  table.sess tbody tr.main.open{background:var(--panel-2)}
+  td.r{text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums}
+  .cost-cell{font-weight:600;letter-spacing:-0.01em}
+  .modelcell{display:flex;align-items:center;gap:9px}
+  .flag{color:var(--amber);font-size:12px;flex:0 0 auto}
+  .badge{display:inline-flex;align-items:center;gap:6px;font-size:11px;padding:3px 8px;border-radius:6px;
+    font-weight:500;font-family:var(--mono);white-space:nowrap}
+  .badge.fleet-cc{background:rgba(214,161,78,0.1);color:var(--amber)}
+  .badge.fleet-mu{background:var(--accent-soft);color:var(--accent)}
+  .kind{font-family:var(--mono);font-size:11.5px}
+  .kind.subscription{color:var(--blue)}
+  .kind.billed{color:var(--accent)}
+  .kind.free{color:var(--fg-mute)}
+  .outcome-chip{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;color:var(--fg-dim)}
+  .outcome-chip .sw{width:8px;height:8px;border-radius:2px;flex:0 0 auto}
+  .chev{display:inline-block;width:14px;color:var(--fg-mute);transition:transform .15s;font-size:10px}
+  tr.main.open .chev{transform:rotate(90deg);color:var(--accent)}
+
+  tr.detail td{padding:0;border-bottom:1px solid var(--border-soft);background:var(--panel-2)}
+  .drill{display:grid;grid-template-columns:1.4fr 1fr;gap:22px;padding:18px 22px 20px}
+  .drill .dcol h4{margin:0 0 11px;font-size:11px;letter-spacing:0.1em;text-transform:uppercase;
+    color:var(--fg-mute);font-weight:600}
+  .drill .stat-row{display:flex;gap:26px;flex-wrap:wrap}
+  .drill .stat{display:flex;flex-direction:column;gap:2px}
+  .drill .stat .l{font-size:10.5px;letter-spacing:0.06em;text-transform:uppercase;color:var(--fg-mute)}
+  .drill .stat .n{font-family:var(--mono);font-size:16px;font-weight:600;color:var(--fg)}
+  .drill .stat .n.acc{color:var(--accent)}
+
+  .empty{padding:26px;text-align:center;color:var(--fg-mute);font-size:12.5px}
+  .foot{margin-top:30px;padding-top:16px;border-top:1px solid var(--border);
+    display:flex;justify-content:space-between;gap:14px;font-size:11px;color:var(--fg-mute);flex-wrap:wrap}
+  .foot .mono{font-family:var(--mono)}
+
+  @media (max-width:1180px){
+    .kpis{grid-template-columns:1fr 1fr}
+    .col-3{grid-column:span 6}.col-4{grid-column:span 6}.col-5{grid-column:span 12}
+    .col-6{grid-column:span 12}.col-7{grid-column:span 12}.col-8{grid-column:span 12}
+  }
+  @media (max-width:680px){
+    .wrap{padding:18px 16px 60px}
+    .kpis{grid-template-columns:1fr}
+    .col-3,.col-4{grid-column:span 12}
+    .drill{grid-template-columns:1fr}
+    header.top{flex-direction:column;gap:14px}
+    .asof{align-items:flex-start}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="top">
+    <div class="brand">
+      <div class="mark"></div>
+      <div>
+        <h1>agent session analytics</h1>
+        <div class="sub">cost &amp; outcome forensics · harnesses <b>mu</b> &amp; <b>claude-code</b></div>
+      </div>
+    </div>
+    <div class="asof">
+      <div class="label">snapshot as of</div>
+      <div class="stamp"><span class="t" id="asof-stamp">—</span></div>
+      <div class="live"><span class="pulse"></span> LIVE · logs streaming</div>
+      <div class="note">every figure is a moving as-of value, not a final total</div>
+    </div>
+  </header>
+
+  <!-- reconciliation banner: the money distinction, in one line -->
+  <div class="recon">
+    <div class="cell">
+      <div class="k"><span class="dot solid"></span>Real spend · billed</div>
+      <div class="v" id="r-billed">—</div>
+    </div>
+    <div class="cell">
+      <div class="k"><span class="dot ring"></span>Notional · subscription (unbilled)</div>
+      <div class="v" id="r-subs">—</div>
+    </div>
+    <div class="cell">
+      <div class="k"><span class="dot free"></span>Free</div>
+      <div class="v" id="r-free">—</div>
+    </div>
+    <div class="cell">
+      <div class="k">API-rate equivalent · total</div>
+      <div class="v" id="r-total">—</div>
+    </div>
+  </div>
+
+  <!-- KPI strip -->
+  <div class="kpis" id="kpis"></div>
+
+  <!-- main grid -->
+  <div class="grid">
+
+    <!-- cost by harness -->
+    <div class="panel col-4">
+      <div class="ph">
+        <div>
+          <div class="ttl">Cost by harness</div>
+          <div class="desc">claude-code carries effectively all spend</div>
+        </div>
+        <div class="hint">rate-equiv $</div>
+      </div>
+      <div class="chart" id="c-fleet" style="height:180px"></div>
+      <div class="legend" id="l-fleet"></div>
+    </div>
+
+    <!-- cost by model -->
+    <div class="panel col-5">
+      <div class="ph">
+        <div>
+          <div class="ttl">Cost by model</div>
+          <div class="desc">opus-class models dominate; bar tint = harness</div>
+        </div>
+        <div class="hint">rate-equiv $</div>
+      </div>
+      <div class="chart" id="c-model" style="height:230px"></div>
+    </div>
+
+    <!-- cost by kind -->
+    <div class="panel col-3">
+      <div class="ph">
+        <div>
+          <div class="ttl">Cost by kind</div>
+          <div class="desc">notional vs paid vs free</div>
+        </div>
+      </div>
+      <div class="chart" id="c-kind" style="height:155px"></div>
+      <div class="legend" id="l-kind"></div>
+    </div>
+
+    <!-- cost composition -->
+    <div class="panel col-4 span-row">
+      <div class="ph">
+        <div>
+          <div class="ttl">Cost composition · top session</div>
+          <div class="desc">where the dollars actually go on the single costliest session</div>
+        </div>
+        <div class="hint" id="comp-hint">—</div>
+      </div>
+      <div class="comp-bar" id="comp-bar"></div>
+      <table class="comp-table" id="comp-table"></table>
+      <div class="comp-key">
+        <div class="big" id="comp-headline">—</div>
+        <div class="txt">of the session is <b>cache-read</b> tokens.<br>input + output are rounding error.</div>
+      </div>
+    </div>
+
+    <!-- outcomes -->
+    <div class="panel col-4 span-row">
+      <div class="ph">
+        <div>
+          <div class="ttl">Session outcomes</div>
+          <div class="desc">forensic classification across all sessions</div>
+        </div>
+        <div class="hint" id="outcome-total">—</div>
+      </div>
+      <div class="obars" id="obars"></div>
+    </div>
+
+    <!-- hallucination rate -->
+    <div class="panel col-4 span-row">
+      <div class="ph">
+        <div>
+          <div class="ttl">Hallucination rate by model</div>
+          <div class="desc">share of sessions flagged no-action / fabricated</div>
+        </div>
+      </div>
+      <div class="chart" id="c-hall" style="height:172px"></div>
+      <div class="caveat" style="margin-top:12px">
+        <div class="ic">!</div>
+        <div class="body"><b>Metric artifact.</b> The <b>claude-code</b> harness classifies ~99.8% of sessions as <span class="mono">narrative_no_action</span>, so its ~100% rate is an instrumentation bug, not model behavior. Trust the <b>mu</b> rows.</div>
+      </div>
+    </div>
+
+    <!-- trend -->
+    <div class="panel col-12 span-row">
+      <div class="ph">
+        <div>
+          <div class="ttl">Cost &amp; degradation over time</div>
+          <div class="desc">daily rate-equiv spend (area) against output-degradation rate (line)</div>
+        </div>
+        <div class="hint">rate-equiv $/day · degradation %</div>
+      </div>
+      <div class="chart" id="c-trend" style="height:280px"></div>
+    </div>
+
+    <!-- session table -->
+    <div class="panel col-12 span-row">
+      <div class="ph" style="align-items:center">
+        <div>
+          <div class="ttl">Sessions</div>
+          <div class="desc">most-expensive first · click a row to drill into its cost makeup</div>
+        </div>
+        <div class="tbl-tools">
+          <div class="seg" id="seg-view">
+            <button data-view="expensive" class="on">Most expensive</button>
+            <button data-view="flagged">Operator-marked</button>
+          </div>
+          <div class="toggle" id="tg-flag"><span class="sw2"></span> only ⚑ flagged</div>
+        </div>
+      </div>
+      <table class="sess" id="sess">
+        <thead>
+          <tr>
+            <th style="width:22px"></th>
+            <th data-sort="started">Started <span class="ar">▲▼</span></th>
+            <th data-sort="fleet">Harness <span class="ar">▲▼</span></th>
+            <th data-sort="model">Model <span class="ar">▲▼</span></th>
+            <th data-sort="kind">Kind <span class="ar">▲▼</span></th>
+            <th data-sort="outcome">Outcome <span class="ar">▲▼</span></th>
+            <th data-sort="tool_calls" class="r">Tool calls <span class="ar">▲▼</span></th>
+            <th data-sort="cpc" class="r">$/call <span class="ar">▲▼</span></th>
+            <th data-sort="cost" class="r act">Cost <span class="ar">▲▼</span></th>
+          </tr>
+        </thead>
+        <tbody id="sess-body"></tbody>
+      </table>
+    </div>
+
+  </div>
+
+  <div class="foot">
+    <div>mu observability · <span class="mono">agent-session analytics</span> · sample dataset</div>
+    <div class="mono" id="foot-meta">—</div>
+  </div>
+
+</div>
+
+<script>
+/* =========================================================================
+   SAMPLE DATA  — swap this object wholesale; the dashboard reads only DATA.
+   Provided fields are verbatim from the source log snapshot. Fields tagged
+   "sample" below are placeholders the generator should populate.
+   ========================================================================= */
+const DATA = /*BEGIN_DATA*/{
+  "as_of": "\u2014 run gen_dashboard.py to populate \u2014",
+  "note": "placeholder; the generator injects verified sink data between the markers",
+  "kpi": {
+    "total_api_rate_equiv": 0,
+    "by_kind": {
+      "subscription": 0,
+      "billed": 0,
+      "free": 0
+    }
+  },
+  "cost_by_kind": [
+    {
+      "label": "subscription",
+      "sessions": 0,
+      "cost": 0
+    },
+    {
+      "label": "billed",
+      "sessions": 0,
+      "cost": 0
+    },
+    {
+      "label": "free",
+      "sessions": 0,
+      "cost": 0
+    }
+  ],
+  "cost_by_fleet": [
+    {
+      "label": "cc",
+      "sessions": 0,
+      "cost": 0
+    },
+    {
+      "label": "mu",
+      "sessions": 0,
+      "cost": 0
+    }
+  ],
+  "cost_by_model": [
+    {
+      "fleet": "cc",
+      "model": "example-model",
+      "sessions": 0,
+      "cost": 0
+    }
+  ],
+  "outcomes": [
+    {
+      "outcome": "unclassified",
+      "sessions": 1
+    }
+  ],
+  "cost_composition_top_session": {
+    "input": 1,
+    "output": 1,
+    "cache_read": 1,
+    "cache_write": 1
+  },
+  "top_sessions": [],
+  "hallucination_by_model": [],
+  "trend_by_day": [
+    {
+      "date": "1970-01-01",
+      "cost": 0,
+      "degradation": 0
+    }
+  ]
+}/*END_DATA*/;
+
+/* =========================== formatting helpers =========================== */
+const usd0 = new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:0});
+const usd2 = new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',minimumFractionDigits:2,maximumFractionDigits:2});
+const n0   = new Intl.NumberFormat('en-US');
+const money = (v,dec=2)=> (dec===0?usd0:usd2).format(v);
+const pct  = (v,d=1)=> (v*100).toFixed(d)+'%';
+
+/* outcome semantic colors (covers the richer set a generator may emit) */
+const OUTCOME_COLOR = {
+  clean_success:      'var(--accent)',
+  partial_success:    '#8fc98f',
+  bug_in_output:      'var(--red)',
+  hollow_commit:      'var(--violet)',
+  narrative_no_action:'var(--amber)',
+  error_exit:         'var(--red)',
+  timeout:            'var(--slate)',
+  _default:           'var(--slate)'
+};
+const oc = k => OUTCOME_COLOR[k] || OUTCOME_COLOR._default;
+const FLEET_COLOR = { cc:'#d6a14e', mu:'#33c9a3' };
+const cssVar = name => getComputedStyle(document.body).getPropertyValue(name).trim();
+
+/* shared ECharts scaffold */
+const AX = '#5f6a78', GRID = '#1b222c', LBL = '#98a2b0';
+function baseTooltip(){
+  return {
+    backgroundColor:'#161b23', borderColor:'#232b37', borderWidth:1,
+    textStyle:{color:'#e8ecf1',fontFamily:"'JetBrains Mono',monospace",fontSize:12},
+    extraCssText:'border-radius:9px;box-shadow:0 10px 30px -12px rgba(0,0,0,.7);padding:9px 11px'
+  };
+}
+
+/* =============================== header =============================== */
+(function header(){
+  const d = new Date(DATA.as_of);
+  const fmt = d.toLocaleString('en-US',{year:'numeric',month:'short',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});
+  document.getElementById('asof-stamp').textContent = fmt;
+  const k = DATA.kpi.by_kind;
+  document.getElementById('r-billed').innerHTML = money(k.billed);
+  document.getElementById('r-subs').innerHTML   = '≈ '+money(k.subscription);
+  document.getElementById('r-free').innerHTML   = money(k.free);
+  document.getElementById('r-total').innerHTML  = '≈ '+money(DATA.kpi.total_api_rate_equiv)+' <small>rate-equiv</small>';
+  const totalSessions = DATA.cost_by_kind.reduce((a,b)=>a+b.sessions,0);
+  document.getElementById('foot-meta').textContent =
+    totalSessions+' sessions · 2 harnesses · '+DATA.cost_by_model.length+' models · snapshot '+DATA.as_of;
+})();
+
+/* =============================== KPI strip =============================== */
+(function kpis(){
+  const k = DATA.kpi.by_kind;
+  const byk = Object.fromEntries(DATA.cost_by_kind.map(x=>[x.label,x]));
+  const totalS = DATA.cost_by_kind.reduce((a,b)=>a+b.sessions,0);
+  const sPct = lbl => Math.round((byk[lbl].sessions/totalS)*100);
+  const html = `
+  <div class="kpi billed">
+    <div class="top">
+      <div class="name"><span class="dot solid"></span>Billed</div>
+      <div class="tag">paid · real $</div>
+    </div>
+    <div class="big"><span class="cur">$</span>${money(k.billed).replace('$','')}</div>
+    <div class="meta"><span class="b">${byk.billed.sessions}</span> sessions · ${sPct('billed')}% of all · money actually charged</div>
+    <div class="bar"><i style="width:${(k.billed/DATA.kpi.total_api_rate_equiv*100).toFixed(2)}%"></i></div>
+  </div>
+
+  <div class="kpi subs">
+    <div class="top">
+      <div class="name"><span class="dot ring"></span>Subscription</div>
+      <div class="tag">notional · unbilled</div>
+    </div>
+    <div class="big"><span class="approx">≈ </span><span class="cur">$</span>${money(k.subscription).replace('$','')}</div>
+    <div class="meta"><span class="b">${byk.subscription.sessions}</span> sessions · flat-rate plans · <b style="color:var(--blue)">API-rate equivalent, $0 charged</b></div>
+    <div class="bar"><i style="width:${(k.subscription/DATA.kpi.total_api_rate_equiv*100).toFixed(2)}%"></i></div>
+  </div>
+
+  <div class="kpi free">
+    <div class="top">
+      <div class="name"><span class="dot free"></span>Free</div>
+      <div class="tag">$0</div>
+    </div>
+    <div class="big"><span class="cur">$</span>0.00</div>
+    <div class="meta"><span class="b">${byk.free.sessions}</span> sessions · ${sPct('free')}% of all</div>
+    <div class="bar"><i style="width:0%"></i></div>
+  </div>
+
+  <div class="kpi total">
+    <div class="top">
+      <div class="name">Total rate-equiv</div>
+      <div class="tag">≈ if API-priced</div>
+    </div>
+    <div class="big"><span class="cur">$</span>${money(DATA.kpi.total_api_rate_equiv).replace('$','')}</div>
+    <div class="meta"><span class="b">${n0.format(totalS)}</span> sessions total · billed is <b>${(k.billed/DATA.kpi.total_api_rate_equiv*100).toFixed(1)}%</b> of this</div>
+    <div class="bar"><i style="width:100%;background:var(--panel-3)"></i></div>
+  </div>`;
+  document.getElementById('kpis').innerHTML = html;
+})();
+
+/* =============================== charts =============================== */
+const charts = [];
+function mk(id){ const c = echarts.init(document.getElementById(id),null,{renderer:'canvas'}); charts.push(c); return c; }
+const accent = cssVar('--accent'), amber = cssVar('--amber'), slate = cssVar('--slate'),
+      blue = cssVar('--blue'), fgmute = cssVar('--fg-mute');
+
+/* cost by harness — horizontal bars */
+(function fleet(){
+  const rows = [...DATA.cost_by_fleet].sort((a,b)=>a.cost-b.cost);
+  const c = mk('c-fleet');
+  c.setOption({
+    grid:{left:6,right:74,top:10,bottom:6,containLabel:true},
+    tooltip:{...baseTooltip(),trigger:'axis',axisPointer:{type:'shadow'},
+      formatter:p=>{const r=rows[p[0].dataIndex];return `<b>${r.label==='cc'?'claude-code':'mu'}</b><br/>${money(r.cost)} · ${r.sessions} sessions`;}},
+    xAxis:{type:'value',axisLabel:{show:false},splitLine:{show:false},axisLine:{show:false},axisTick:{show:false}},
+    yAxis:{type:'category',data:rows.map(r=>r.label==='cc'?'claude-code':'mu'),
+      axisLine:{show:false},axisTick:{show:false},
+      axisLabel:{color:LBL,fontFamily:"'JetBrains Mono',monospace",fontSize:12}},
+    series:[{type:'bar',data:rows.map(r=>({value:r.cost,itemStyle:{color:FLEET_COLOR[r.label],borderRadius:[0,5,5,0]}})),
+      barWidth:34,
+      label:{show:true,position:'right',color:'#e8ecf1',fontFamily:"'JetBrains Mono',monospace",fontSize:12.5,fontWeight:600,
+        formatter:p=>money(rows[p.dataIndex].cost,rows[p.dataIndex].cost>=100?0:2)}}]
+  });
+  document.getElementById('l-fleet').innerHTML = rows.slice().reverse().map(r=>
+    `<div class="it"><span class="sw" style="background:${FLEET_COLOR[r.label]}"></span>${r.label==='cc'?'claude-code':'mu'} · ${r.sessions} sess <b>${money(r.cost,r.cost>=100?0:2)}</b></div>`).join('');
+})();
+
+/* cost by model — horizontal bars tinted by fleet */
+(function model(){
+  const rows = [...DATA.cost_by_model].sort((a,b)=>a.cost-b.cost);
+  const c = mk('c-model');
+  c.setOption({
+    grid:{left:6,right:66,top:6,bottom:6,containLabel:true},
+    tooltip:{...baseTooltip(),trigger:'axis',axisPointer:{type:'shadow'},
+      formatter:p=>{const r=rows[p[0].dataIndex];return `<b>${r.model}</b><br/>${r.fleet} · ${money(r.cost)} · ${r.sessions} sessions`;}},
+    xAxis:{type:'value',axisLabel:{show:false},splitLine:{show:false},axisLine:{show:false},axisTick:{show:false}},
+    yAxis:{type:'category',data:rows.map(r=>r.model.replace('google/','').replace('claude-','')),
+      axisLine:{show:false},axisTick:{show:false},
+      axisLabel:{color:LBL,fontFamily:"'JetBrains Mono',monospace",fontSize:11}},
+    series:[{type:'bar',data:rows.map(r=>({value:r.cost,itemStyle:{color:FLEET_COLOR[r.fleet],borderRadius:[0,4,4,0],
+        opacity: r.fleet==='cc'?1:0.92}})),barWidth:13,
+      label:{show:true,position:'right',color:'#cdd4dd',fontFamily:"'JetBrains Mono',monospace",fontSize:11,
+        formatter:p=>money(rows[p.dataIndex].cost,rows[p.dataIndex].cost>=100?0:2)}}]
+  });
+})();
+
+/* cost by kind — donut */
+(function kind(){
+  const map={subscription:slate,billed:accent,free:fgmute};
+  const rows = DATA.cost_by_kind.filter(r=>r.cost>0);
+  const c = mk('c-kind');
+  c.setOption({
+    tooltip:{...baseTooltip(),trigger:'item',formatter:p=>`<b>${p.name}</b><br/>${money(p.value)} · ${pct(p.percent/100,1)}`},
+    series:[{type:'pie',radius:['58%','82%'],center:['50%','50%'],avoidLabelOverlap:false,
+      itemStyle:{borderColor:'#12161d',borderWidth:2},label:{show:false},labelLine:{show:false},
+      data:rows.map(r=>({name:r.label,value:r.cost,itemStyle:{color:map[r.label]}}))}],
+    graphic:[
+      {type:'text',left:'center',top:'40%',style:{text:'billed share',fill:fgmute,fontFamily:"'JetBrains Mono',monospace",fontSize:10,textAlign:'center'}},
+      {type:'text',left:'center',top:'50%',style:{text:(DATA.kpi.by_kind.billed/DATA.kpi.total_api_rate_equiv*100).toFixed(1)+'%',fill:accent,fontFamily:"'JetBrains Mono',monospace",fontSize:19,fontWeight:700,textAlign:'center'}}
+    ]
+  });
+  const totalC = DATA.cost_by_kind.reduce((a,b)=>a+b.cost,0);
+  document.getElementById('l-kind').innerHTML = DATA.cost_by_kind.map(r=>
+    `<div class="it"><span class="sw" style="background:${map[r.label]}"></span>${r.label} <b>${money(r.cost,r.cost>=100?0:2)}</b></div>`).join('');
+})();
+
+/* cost composition — stacked css bar + table */
+(function comp(){
+  const co = DATA.cost_composition_top_session;
+  const parts=[
+    {k:'cache_read', v:co.cache_read, c:accent,  label:'cache read'},
+    {k:'output',     v:co.output,     c:blue,    label:'output'},
+    {k:'cache_write',v:co.cache_write,c:amber,   label:'cache write'},
+    {k:'input',      v:co.input,      c:slate,   label:'input'}
+  ];
+  const tot = parts.reduce((a,b)=>a+b.v,0);
+  document.getElementById('comp-bar').innerHTML = parts.map(p=>
+    `<i style="width:${(p.v/tot*100).toFixed(3)}%;background:${p.c}"></i>`).join('');
+  document.getElementById('comp-table').innerHTML = parts.map(p=>`
+    <tr>
+      <td class="lab"><span class="sw" style="background:${p.c}"></span>${p.label}</td>
+      <td class="v">${money(p.v)}</td>
+      <td class="pc">${(p.v/tot*100).toFixed(p.v/tot<0.01?2:1)}%</td>
+    </tr>`).join('');
+  document.getElementById('comp-headline').textContent = (co.cache_read/tot*100).toFixed(1)+'%';
+  document.getElementById('comp-hint').textContent = money(tot);
+})();
+
+/* outcomes — html bars */
+(function outcomes(){
+  const rows=[...DATA.outcomes].sort((a,b)=>b.sessions-a.sessions);
+  const tot=rows.reduce((a,b)=>a+b.sessions,0);
+  const max=Math.max(...rows.map(r=>r.sessions));
+  document.getElementById('outcome-total').textContent = n0.format(tot)+' sessions';
+  document.getElementById('obars').innerHTML = rows.map(r=>`
+    <div class="obar">
+      <div class="row">
+        <div class="nm"><span class="sw" style="background:${oc(r.outcome)}"></span>${r.outcome}</div>
+        <div class="ct"><b>${n0.format(r.sessions)}</b> · ${pct(r.sessions/tot,1)}</div>
+      </div>
+      <div class="track"><i style="width:${(r.sessions/max*100).toFixed(2)}%;background:${oc(r.outcome)}"></i></div>
+    </div>`).join('');
+})();
+
+/* hallucination rate — horizontal bars by model */
+(function hall(){
+  const rows=[...DATA.hallucination_by_model].sort((a,b)=>a.rate-b.rate);
+  const c = mk('c-hall');
+  c.setOption({
+    grid:{left:6,right:48,top:6,bottom:18,containLabel:true},
+    tooltip:{...baseTooltip(),trigger:'axis',axisPointer:{type:'shadow'},
+      formatter:p=>{const r=rows[p[0].dataIndex];return `<b>${r.model}</b><br/>${r.fleet} · ${pct(r.rate,1)} · ${r.sessions} sessions`;}},
+    xAxis:{type:'value',max:1,axisLabel:{color:fgmute,fontFamily:"'JetBrains Mono',monospace",fontSize:10,formatter:v=>(v*100)+'%'},
+      splitLine:{lineStyle:{color:GRID}},axisLine:{show:false},axisTick:{show:false}},
+    yAxis:{type:'category',data:rows.map(r=>r.model.replace('google/','').replace('claude-','')),
+      axisLine:{show:false},axisTick:{show:false},
+      axisLabel:{color:LBL,fontFamily:"'JetBrains Mono',monospace",fontSize:10.5}},
+    series:[{type:'bar',data:rows.map(r=>({value:r.rate,itemStyle:{color:FLEET_COLOR[r.fleet],borderRadius:[0,4,4,0],
+        opacity:r.fleet==='cc'?0.55:1}})),barWidth:12,
+      label:{show:true,position:'right',color:'#cdd4dd',fontFamily:"'JetBrains Mono',monospace",fontSize:10.5,
+        formatter:p=>(rows[p.dataIndex].rate*100).toFixed(rows[p.dataIndex].rate>=0.99?1:0)+'%'}}]
+  });
+})();
+
+/* trend — cost area + degradation line on second axis */
+(function trend(){
+  const t = DATA.trend_by_day;
+  const c = mk('c-trend');
+  c.setOption({
+    grid:{left:10,right:14,top:18,bottom:26,containLabel:true},
+    tooltip:{...baseTooltip(),trigger:'axis',axisPointer:{type:'cross',crossStyle:{color:'#3a4350'},lineStyle:{color:'#3a4350'}},
+      formatter:ps=>{const d=ps[0].axisValue;let s=`<b>${d}</b>`;ps.forEach(p=>{
+        s+=`<br/>${p.marker} ${p.seriesName}: ${p.seriesName==='degradation'?pct(p.value,1):money(p.value,p.value>=100?0:2)}`;});return s;}},
+    legend:{data:['cost/day','degradation'],right:6,top:-2,itemWidth:14,itemHeight:8,
+      textStyle:{color:LBL,fontSize:11,fontFamily:"'JetBrains Mono',monospace"},inactiveColor:'#3a4350'},
+    xAxis:{type:'category',data:t.map(d=>d.date.slice(5)),boundaryGap:false,
+      axisLine:{lineStyle:{color:GRID}},axisTick:{show:false},
+      axisLabel:{color:fgmute,fontFamily:"'JetBrains Mono',monospace",fontSize:9.5,interval:3}},
+    yAxis:[
+      {type:'value',name:'$/day',nameTextStyle:{color:fgmute,fontSize:10,fontFamily:"'JetBrains Mono',monospace",align:'left'},
+        axisLabel:{color:fgmute,fontFamily:"'JetBrains Mono',monospace",fontSize:10,formatter:v=>'$'+v},
+        splitLine:{lineStyle:{color:GRID}},axisLine:{show:false},axisTick:{show:false}},
+      {type:'value',max:1,name:'degr.',nameTextStyle:{color:fgmute,fontSize:10,fontFamily:"'JetBrains Mono',monospace"},
+        axisLabel:{color:fgmute,fontFamily:"'JetBrains Mono',monospace",fontSize:10,formatter:v=>(v*100)+'%'},
+        splitLine:{show:false},axisLine:{show:false},axisTick:{show:false}}
+    ],
+    series:[
+      {name:'cost/day',type:'line',smooth:true,symbol:'none',data:t.map(d=>d.cost),
+        lineStyle:{color:accent,width:2},
+        areaStyle:{color:new echarts.graphic.LinearGradient(0,0,0,1,[
+          {offset:0,color:'rgba(51,201,163,0.28)'},{offset:1,color:'rgba(51,201,163,0.01)'}])}},
+      {name:'degradation',type:'line',yAxisIndex:1,smooth:true,symbol:'none',data:t.map(d=>d.degradation),
+        lineStyle:{color:amber,width:1.6,type:'dashed'}}
+    ]
+  });
+})();
+
+/* =============================== session table =============================== */
+(function table(){
+  const body = document.getElementById('sess-body');
+  const base = DATA.top_sessions.map((s,i)=>({...s, _i:i, cpc: s.cost/s.tool_calls}));
+  let view='expensive', sortKey='cost', sortDir=-1, flaggedOnly=false, openIdx=null;
+
+  // derive per-session composition: top session exact; others scaled to the same shape
+  const topTot = Object.values(DATA.cost_composition_top_session).reduce((a,b)=>a+b,0);
+  const ratio = Object.fromEntries(Object.entries(DATA.cost_composition_top_session).map(([k,v])=>[k,v/topTot]));
+  function compFor(s){
+    if(Math.abs(s.cost-topTot)<0.001) return DATA.cost_composition_top_session;
+    return { input:s.cost*ratio.input, output:s.cost*ratio.output,
+             cache_read:s.cost*ratio.cache_read, cache_write:s.cost*ratio.cache_write };
+  }
+
+  function rows(){
+    let r = base.slice();
+    if(view==='flagged' || flaggedOnly) r = r.filter(x=>x.flagged);
+    r.sort((a,b)=>{
+      let av=a[sortKey], bv=b[sortKey];
+      if(typeof av==='string') return sortDir*av.localeCompare(bv);
+      return sortDir*(av-bv);
+    });
+    return r;
+  }
+
+  function drill(s){
+    const co=compFor(s);
+    const tot=Object.values(co).reduce((a,b)=>a+b,0);
+    const parts=[
+      {v:co.cache_read,c:accent,l:'cache read'},
+      {v:co.output,c:blue,l:'output'},
+      {v:co.cache_write,c:amber,l:'cache write'},
+      {v:co.input,c:slate,l:'input'}
+    ];
+    return `<tr class="detail"><td colspan="9"><div class="drill">
+      <div class="dcol">
+        <h4>Cost makeup · ${money(s.cost)}</h4>
+        <div class="comp-bar">${parts.map(p=>`<i style="width:${(p.v/tot*100).toFixed(3)}%;background:${p.c}"></i>`).join('')}</div>
+        <table class="comp-table">${parts.map(p=>`<tr>
+          <td class="lab"><span class="sw" style="background:${p.c}"></span>${p.l}</td>
+          <td class="v">${money(p.v)}</td>
+          <td class="pc">${(p.v/tot*100).toFixed(p.v/tot<0.01?2:1)}%</td></tr>`).join('')}</table>
+      </div>
+      <div class="dcol">
+        <h4>Session</h4>
+        <div class="stat-row">
+          <div class="stat"><span class="l">cost</span><span class="n acc">${money(s.cost)}</span></div>
+          <div class="stat"><span class="l">tool calls</span><span class="n">${n0.format(s.tool_calls)}</span></div>
+          <div class="stat"><span class="l">$ / call</span><span class="n">${money(s.cpc)}</span></div>
+        </div>
+        <div class="stat-row" style="margin-top:16px">
+          <div class="stat"><span class="l">harness</span><span class="n">${s.fleet==='cc'?'claude-code':'mu'}</span></div>
+          <div class="stat"><span class="l">model</span><span class="n" style="font-size:13px">${s.model}</span></div>
+        </div>
+        <div class="stat-row" style="margin-top:16px">
+          <div class="stat"><span class="l">kind</span><span class="n" style="color:${s.kind==='billed'?accent:s.kind==='subscription'?blue:fgmute}">${s.kind}</span></div>
+          <div class="stat"><span class="l">outcome</span><span class="n" style="font-size:13px;color:${oc(s.outcome)}">${s.outcome}</span></div>
+          <div class="stat"><span class="l">started</span><span class="n">${s.started}</span></div>
+        </div>
+        ${s.kind==='subscription'?`<div class="caveat" style="margin-top:16px"><div class="ic">≈</div><div class="body">This <b style="color:var(--amber)">${money(s.cost)}</b> is <b style="color:var(--amber)">notional</b> — a subscription session priced at API-equivalent rates. <b style="color:var(--amber)">$0</b> was actually billed.</div></div>`:''}
+      </div>
+    </div></td></tr>`;
+  }
+
+  function render(){
+    const r=rows();
+    if(!r.length){ body.innerHTML=`<tr><td colspan="9"><div class="empty">No sessions match this filter.</div></td></tr>`; return; }
+    body.innerHTML = r.map(s=>{
+      const open = openIdx===s._i;
+      return `<tr class="main ${open?'open':''}" data-i="${s._i}">
+        <td><span class="chev">▶</span></td>
+        <td class="mono dim" style="font-size:12px">${s.started}</td>
+        <td><span class="badge fleet-${s.fleet}">${s.fleet==='cc'?'claude-code':'mu'}</span></td>
+        <td><div class="modelcell">${s.flagged?'<span class="flag" title="operator-marked">⚑</span>':''}<span class="mono" style="font-size:12px">${s.model.replace('google/','')}</span></div></td>
+        <td><span class="kind ${s.kind}">${s.kind}</span></td>
+        <td><span class="outcome-chip"><span class="sw" style="background:${oc(s.outcome)}"></span>${s.outcome}</span></td>
+        <td class="r dim">${n0.format(s.tool_calls)}</td>
+        <td class="r dim">${money(s.cpc)}</td>
+        <td class="r cost-cell">${money(s.cost)}</td>
+      </tr>${open?drill(s):''}`;
+    }).join('');
+    body.querySelectorAll('tr.main').forEach(tr=>tr.addEventListener('click',()=>{
+      const i=+tr.dataset.i; openIdx = openIdx===i?null:i; render();
+    }));
+    // header active state
+    document.querySelectorAll('#sess thead th[data-sort]').forEach(th=>{
+      const on = th.dataset.sort===sortKey;
+      th.classList.toggle('act',on);
+      th.querySelector('.ar').textContent = on ? (sortDir<0?'▼':'▲') : '▲▼';
+    });
+  }
+
+  document.querySelectorAll('#sess thead th[data-sort]').forEach(th=>{
+    th.addEventListener('click',()=>{
+      const k=th.dataset.sort;
+      if(sortKey===k) sortDir*=-1; else { sortKey=k; sortDir = (k==='started'||k==='fleet'||k==='model'||k==='kind'||k==='outcome')?1:-1; }
+      openIdx=null; render();
+    });
+  });
+  document.querySelectorAll('#seg-view button').forEach(b=>{
+    b.addEventListener('click',()=>{
+      document.querySelectorAll('#seg-view button').forEach(x=>x.classList.remove('on'));
+      b.classList.add('on'); view=b.dataset.view; openIdx=null;
+      if(view==='flagged'){sortKey='cost';sortDir=-1;}
+      render();
+    });
+  });
+  const tg=document.getElementById('tg-flag');
+  tg.addEventListener('click',()=>{ flaggedOnly=!flaggedOnly; tg.classList.toggle('on',flaggedOnly); openIdx=null; render(); });
+
+  render();
+})();
+
+/* resize */
+window.addEventListener('resize',()=>charts.forEach(c=>c.resize()));
+</script>
+
+
+
+</body></html>

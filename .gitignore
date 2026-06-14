@@ -1,0 +1,20 @@
+# ── private data (real costs / session info) — never commit ──
+data/
+dist/
+*.sqlite
+sample.json
+
+# ── machine-specific config (absolute paths) — ships as config.example.toml ──
+config.toml
+
+# ── design-tool artifacts: bundled HTML + the extracted template all carry
+#    real data baked in. assets/ (vendored ECharts + fonts) IS committed. ──
+shell.html
+maybe_actually_shell.html
+design/
+
+# ── build artifacts ──
+lib/
+__pycache__/
+*.pyc
+*.so

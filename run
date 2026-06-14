@@ -1,0 +1,9 @@
+#!/bin/sh
+# Resolve the canonical interpreter from config.toml, then run a project script
+# under it. The whole point: the interpreter path lives in ONE place.
+#   ./run cc_telemetry.py <args...>
+set -eu
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+py=$(tq -f "$here/config.toml" -r python_interpreter_path)
+script=$1; shift
+exec "$py" "$here/$script" "$@"

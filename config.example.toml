@@ -1,0 +1,83 @@
+# mu-analytics — single source of truth for the interpreter and paths.
+#
+#   cp config.example.toml config.toml   then edit the [paths] for your machine.
+# config.toml is gitignored (it holds machine-specific absolute paths); this
+# example is the tracked template. The [rates] / [cost_kind] / [cache_multipliers]
+# blocks below are public pricing + taxonomy — copy them as-is.
+#
+# Shell bootstraps the interpreter:   tq -f config.toml -r python_interpreter_path
+# Python reads the rest natively:     tomllib.load(open("config.toml","rb"))  (3.11 stdlib)
+
+# Canonical interpreter: the python that actually has polars installed.
+# Beware a second, pkg-blind python shadowing it on PATH (a sys.path that lacks
+# the site-packages where polars lives) — point this at the one that imports polars.
+python_interpreter_path = "/usr/local/bin/python3.11"
+
+[paths]
+# mu's real sink — READ-ONLY source of mu-side task rows. We never write here.
+mu_sink_db = "/home/USER/.local/share/mu/telemetry.sqlite"
+# cc rollup we own, kept SEPARATE from mu's sink; the polars layer unions the two
+# at read time so cc data never mutates mu's store.
+cc_sink_db = "/home/USER/src/mu-analytics/data/cc-telemetry.sqlite"
+# where the cc->mu TaskTelemetry emitter writes mu-format event logs.
+cc_events_out = "/home/USER/src/mu-analytics/data/cc-events"
+# where refresh.sh writes the live dashboard (nginx-served).
+dashboard_out = "/home/USER/mu-stats/analytics/index.html"
+# claude-code transcript roots (one per cc account), globbed for *.jsonl.
+cc_log_roots = [
+  "/home/USER/.claude/projects",
+  "/home/USER/.claude-personal/projects",
+  "/home/USER/.claude-openrouter/projects",
+]
+
+# ── Pricing ─────────────────────────────────────────────────────────────
+# Anthropic list pricing, USD per million tokens, pulled from the claude-api
+# reference (pricing table cached 2026-06-04) — NOT from model memory.
+# Cache costs derive from each model's INPUT rate via the multipliers below.
+#   * opus 4.x is 5/25 (an old script's 15/75 was wrong).
+#   * Fable ($10/$50) is exactly 2x opus ($5/$25) on both input and output,
+#     so "Fable = 2x opus" is list pricing, encoded as the real rate (not a
+#     cost multiplier). Cost = rate x that model's actual tokens.
+# Unknown/unlisted models are FLAGGED by the cost layer, never silently priced.
+
+[cache_multipliers]            # applied to each model's input rate
+write_5m = 1.25
+write_1h = 2.00
+read     = 0.10
+
+[rates]                        # USD per million tokens
+"claude-fable-5"    = { input = 10.0, output = 50.0 }
+"claude-opus-4-8"   = { input = 5.0,  output = 25.0 }
+"claude-opus-4-7"   = { input = 5.0,  output = 25.0 }
+"claude-opus-4-6"   = { input = 5.0,  output = 25.0 }
+"claude-sonnet-4-6" = { input = 3.0,  output = 15.0 }
+"claude-haiku-4-5"  = { input = 1.0,  output = 5.0 }
+# Non-Anthropic — from OpenRouter's public models API. Caveats: OpenAI/codex via
+# OAuth is flat-rate, so these price VIRTUAL cost (API-rate equivalent), not
+# real spend; and OpenAI cache is a SUBSET of input (not disjoint like
+# Anthropic), so cache cost is approximate under the universal multipliers.
+"gpt-5.5"           = { input = 5.0,  output = 30.0 }
+"gpt-5.4"           = { input = 2.5,  output = 15.0 }
+"gpt-5.4-mini"      = { input = 0.75, output = 4.5 }
+"gemini-3.5-flash"  = { input = 1.5,  output = 9.0 }
+"claude-3.5-haiku"  = { input = 0.8,  output = 4.0 }
+
+# ── Cost kind ───────────────────────────────────────────────────────────
+# Determined by the SERVING PATH (provider), not the model identity:
+# ollama/gemma is free (self-hosted), openrouter/gemma is billed (per-token) —
+# same model, opposite kind. Model-level overrides (mu's fake `faux`) win over
+# the provider default. Unmapped providers fall to "unknown" and are FLAGGED.
+#   billed       = real per-token spend
+#   subscription = flat-rate; figure is API-rate-equivalent, NOT money paid
+#   free         = $0 (self-hosted / test / empty)
+[cost_kind.provider]
+anthropic_api = "billed"
+openrouter    = "billed"
+openai_codex  = "subscription"
+claude_code   = "subscription"     # cc personal/work = Anthropic subscription
+ollama        = "free"             # local, self-hosted
+vllm          = "free"             # local, self-hosted
+
+[cost_kind.model]                  # overrides that win over the provider default
+faux    = "free"                   # mu's fake provider, recorded under anthropic_api
+unknown = "free"
