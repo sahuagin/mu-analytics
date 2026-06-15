@@ -11,10 +11,11 @@ Calibration knobs intentionally simple for the MVP (refine by looking):
   - exit_reason == "done" for every cc session
   - provider_kind == "claude_code" so cc is visibly distinct from mu's anthropic
 """
+
+import glob
 import json
 import os
 import sys
-import glob
 from datetime import datetime
 
 # Typed Anthropic parser (pyo3 wheel built from crates/providers/mu-anthropic-py
@@ -45,14 +46,19 @@ def extract_message(message: dict):
         s = json.dumps(message)
         if _MA.is_valid_response_message(s):
             norm = json.loads(_MA.parse_response_message(s))
-            tools = [(b.get("name", "unknown"), b.get("id", ""))
-                     for b in (norm.get("content") or []) if b.get("type") == "tool_use"]
+            tools = [
+                (b.get("name", "unknown"), b.get("id", ""))
+                for b in (norm.get("content") or [])
+                if b.get("type") == "tool_use"
+            ]
             _PARSE["typed"] += 1
             return (norm.get("usage") or {}, norm.get("model") or "unknown", tools)
     _PARSE["fallback"] += 1
-    tools = [(b.get("name", "unknown"), b.get("id", ""))
-             for b in (message.get("content") or [])
-             if isinstance(b, dict) and b.get("type") == "tool_use"]
+    tools = [
+        (b.get("name", "unknown"), b.get("id", ""))
+        for b in (message.get("content") or [])
+        if isinstance(b, dict) and b.get("type") == "tool_use"
+    ]
     return (message.get("usage") or {}, message.get("model") or "unknown", tools)
 
 
@@ -60,8 +66,8 @@ def convert_session(path: str):
     """Return (session_id, [mu-core SessionEvent dicts]) or None if no assistant msgs."""
     # Dedup assistant usage by message id (streaming repeats the id with growing
     # usage; last record wins — mirrors mu_stats.sql cc_calls QUALIFY).
-    assistants = {}          # msg_id -> (usage, model)
-    tool_calls = []          # (name, call_id)
+    assistants = {}  # msg_id -> (usage, model)
+    tool_calls = []  # (name, call_id)
     first_ts = last_ts = None
 
     with open(path) as f:
@@ -91,12 +97,12 @@ def convert_session(path: str):
     # Dominant *real* model: cc tags system-injected turns with "<synthetic>";
     # pick the most frequent model that isn't synthetic/unknown.
     import collections
+
     mc = collections.Counter(
-        mdl for _u, mdl in assistants.values()
-        if mdl and mdl not in ("<synthetic>", "unknown")
+        mdl for _u, mdl in assistants.values() if mdl and mdl not in ("<synthetic>", "unknown")
     )
     model = mc.most_common(1)[0][0] if mc else "unknown"
-    for usage, mdl in assistants.values():
+    for usage, _mdl in assistants.values():
         # `.get(k, 0)` returns None when the key exists but is null (work/
         # openrouter accounts do this) — coerce with `or 0`.
         pt += usage.get("input_tokens") or 0
@@ -117,18 +123,30 @@ def convert_session(path: str):
     events = []
     eid = 1
     for name, cid in tool_calls:
-        events.append({
-            "id": eid, "session_id": sid, "timestamp_unix_ms": first_ts or 0,
-            "actor": {"kind": "agent"},
-            "payload": {"kind": "tool_call", "call_id": cid or f"c{eid}",
-                        "name": name, "arguments": {}},
-        })
+        events.append(
+            {
+                "id": eid,
+                "session_id": sid,
+                "timestamp_unix_ms": first_ts or 0,
+                "actor": {"kind": "agent"},
+                "payload": {
+                    "kind": "tool_call",
+                    "call_id": cid or f"c{eid}",
+                    "name": name,
+                    "arguments": {},
+                },
+            }
+        )
         eid += 1
 
     tt = {
-        "kind": "task_telemetry", "task_id": f"cc-{sid}", "session_id": sid,
-        "provider_kind": provider, "model": model,
-        "ended_at_unix_ms": last_ts or 0, "exit_reason": "done",
+        "kind": "task_telemetry",
+        "task_id": f"cc-{sid}",
+        "session_id": sid,
+        "provider_kind": provider,
+        "model": model,
+        "ended_at_unix_ms": last_ts or 0,
+        "exit_reason": "done",
     }
     if first_ts:
         tt["started_at_unix_ms"] = first_ts
@@ -147,19 +165,25 @@ def convert_session(path: str):
     if cw1:
         tt["cache_write_1h_tokens"] = cw1
 
-    events.append({
-        "id": eid, "session_id": sid, "timestamp_unix_ms": last_ts or 0,
-        "actor": {"kind": "system"}, "payload": tt,
-    })
+    events.append(
+        {
+            "id": eid,
+            "session_id": sid,
+            "timestamp_unix_ms": last_ts or 0,
+            "actor": {"kind": "system"},
+            "payload": tt,
+        }
+    )
     return sid, events
 
 
 def main():
     import tomllib
+
     here = os.path.dirname(os.path.abspath(__file__))
-    if len(sys.argv) >= 3:                        # ad-hoc: explicit <pattern> <out-dir>
+    if len(sys.argv) >= 3:  # ad-hoc: explicit <pattern> <out-dir>
         patterns, out_dir = [sys.argv[1]], sys.argv[2]
-    else:                                         # default: ALL cc accounts from config
+    else:  # default: ALL cc accounts from config
         cfg = tomllib.load(open(os.path.join(here, "config.toml"), "rb"))
         patterns = [os.path.join(r, "*", "*.jsonl") for r in cfg["paths"]["cc_log_roots"]]
         out_dir = cfg["paths"]["cc_events_out"]

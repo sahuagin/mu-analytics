@@ -12,6 +12,7 @@ replay dashboard marks back into mu as `operator_mark` events.
 
 Run:  ./run marks_store.py    # prints the unioned marks
 """
+
 import json
 import os
 import sqlite3
@@ -62,14 +63,26 @@ def read_marks(ev_con):
         "FROM ev WHERE kind='operator_mark' ORDER BY ts"
     ).fetchall()
     for ts, rating, note in rows:
-        out.append({"date": _day(ts), "rating": _coerce_rating(rating),
-                    "note": note or "", "source": "mu_event"})
+        out.append(
+            {
+                "date": _day(ts),
+                "rating": _coerce_rating(rating),
+                "note": note or "",
+                "source": "mu_event",
+            }
+        )
     con = _ensure()
     for ts, rating, note in con.execute(
         "SELECT created_at_unix_ms, rating, note FROM marks ORDER BY created_at_unix_ms"
     ):
-        out.append({"date": _day(ts), "rating": _coerce_rating(rating),
-                    "note": note or "", "source": "dashboard"})
+        out.append(
+            {
+                "date": _day(ts),
+                "rating": _coerce_rating(rating),
+                "note": note or "",
+                "source": "dashboard",
+            }
+        )
     con.close()
     out.sort(key=lambda m: m["date"])
     return out
@@ -88,10 +101,13 @@ def add_mark(task_id, rating, note="", session_id=None, daemon=None, created_at_
     con.close()
 
 
-def ingest_inbox(inbox=INBOX):
+def ingest_inbox(inbox=None):
     """Fold exported-mark JSONL files (one JSON object per line) into marks.sqlite,
     then move each consumed file aside. Returns the count ingested. Safe to call
-    when the inbox is absent/empty (refresh.sh runs it every cycle)."""
+    when the inbox is absent/empty (refresh.sh runs it every cycle). `inbox` defaults
+    to the module INBOX, read at call time (not def time, so it stays overridable)."""
+    if inbox is None:
+        inbox = INBOX
     if not os.path.isdir(inbox):
         return 0
     n = 0
@@ -109,9 +125,11 @@ def ingest_inbox(inbox=INBOX):
                 except json.JSONDecodeError:
                     continue
                 add_mark(
-                    m.get("task_id") or m.get("id") or f"mark-{int(time.time()*1000)}",
-                    m.get("rating", 3), m.get("note", ""),
-                    m.get("session_id"), m.get("daemon"),
+                    m.get("task_id") or m.get("id") or f"mark-{int(time.time() * 1000)}",
+                    m.get("rating", 3),
+                    m.get("note", ""),
+                    m.get("session_id"),
+                    m.get("daemon"),
                     m.get("created_at_unix_ms"),
                 )
                 n += 1

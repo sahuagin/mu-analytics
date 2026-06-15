@@ -7,15 +7,18 @@ Cost math reuses sample_data's rate table + formula — never re-derived here.
 
 `./run panels.py` prints each slice (a verification harness).
 """
+
 import math
 
 import engine
-from sample_data import RATES, MULT, rate_key
+from sample_data import MULT, RATES, rate_key
 
 # Source labels for recall provenance -> the proto's display strings.
 _SRC_LABEL = {
-    "project_file": "ProjectFile", "filesystem": "ProjectFile",
-    "memory": "Memory", "bootloader": "Bootloader",
+    "project_file": "ProjectFile",
+    "filesystem": "ProjectFile",
+    "memory": "Memory",
+    "bootloader": "Bootloader",
 }
 _COMPACTION_ACTIONS = ("kept", "dropped", "summarized", "failed")
 
@@ -199,8 +202,12 @@ def _daemon_model(con, daemon):
 
 
 # --- flagged queue: degradation signals straight from the event log ---
-_REASON_CONF = {"deg": "Probable 0.62", "err": "Probable 0.70",
-                "callout": "Definite 0.88", "tomb": "Inferred 0.41"}
+_REASON_CONF = {
+    "deg": "Probable 0.62",
+    "err": "Probable 0.70",
+    "callout": "Definite 0.88",
+    "tomb": "Inferred 0.41",
+}
 _SEVERITY = {"deg": 0, "err": 1, "callout": 2, "tomb": 3}
 
 
@@ -246,6 +253,7 @@ def flagged_queue(con, limit=12):
     ).fetchall()
     # round-robin across reason types so the queue shows variety, severest first
     from collections import defaultdict
+
     buckets = defaultdict(list)
     for r in rows:
         buckets[r[1]].append(r)
@@ -259,14 +267,16 @@ def flagged_queue(con, limit=12):
                     break
     out = []
     for daemon, reason, why, model in interleaved:
-        out.append({
-            "id": "mu·" + daemon[:4],
-            "fleet": "mu",
-            "model": model or "—",
-            "reason": reason,
-            "why": why,
-            "conf": _REASON_CONF.get(reason, "Inferred 0.40"),
-        })
+        out.append(
+            {
+                "id": "mu·" + daemon[:4],
+                "fleet": "mu",
+                "model": model or "—",
+                "reason": reason,
+                "why": why,
+                "conf": _REASON_CONF.get(reason, "Inferred 0.40"),
+            }
+        )
     return out
 
 
@@ -315,9 +325,11 @@ def cache_econ(con):
     return {
         "median_gap_min": median_gap,
         "p90_gap_min": p90_gap,
-        "save_pct": save_at(median_gap),       # honest: small when turns are fast
-        "save_pct_p90": save_at(p90_gap),       # where 1h actually starts to pay
-        "w5_tokens": int(vol[0]), "w1_tokens": int(vol[1]), "read_tokens": int(vol[2]),
+        "save_pct": save_at(median_gap),  # honest: small when turns are fast
+        "save_pct_p90": save_at(p90_gap),  # where 1h actually starts to pay
+        "w5_tokens": int(vol[0]),
+        "w1_tokens": int(vol[1]),
+        "read_tokens": int(vol[2]),
     }
 
 
@@ -344,10 +356,12 @@ def per_ask(con, daemon=None, limit=28):
     ).fetchall()
     out = []
     for i, (inp, o, cr, cw) in enumerate(rows, 1):
-        cost = ((inp or 0) * rr["input"]
-                + (cr or 0) * rr["input"] * MULT["read"]
-                + (cw or 0) * rr["input"] * MULT["write_5m"]
-                + (o or 0) * rr["output"]) / 1e6
+        cost = (
+            (inp or 0) * rr["input"]
+            + (cr or 0) * rr["input"] * MULT["read"]
+            + (cw or 0) * rr["input"] * MULT["write_5m"]
+            + (o or 0) * rr["output"]
+        ) / 1e6
         out.append({"i": i, "cost": round(cost, 4), "rewrite_5m": bool(cw)})
     return {"daemon": daemon, "model": model, "asks": out}
 

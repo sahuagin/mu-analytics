@@ -16,13 +16,19 @@ sample_data._load(), unchanged. cc event-log parity is a later phase.
 
 Run:  ./run engine.py        # smoke: prints the per-kind histogram
 """
+
 import os
 import tomllib
 
 import duckdb
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-_cfg = tomllib.load(open(os.path.join(HERE, "config.toml"), "rb"))
+# config.toml is machine-specific (gitignored); fall back to the committed example
+# so imports work in CI / fresh checkouts (tests use fixtures, not these paths).
+_CFG_PATH = os.path.join(HERE, "config.toml")
+if not os.path.exists(_CFG_PATH):
+    _CFG_PATH = os.path.join(HERE, "config.example.toml")
+_cfg = tomllib.load(open(_CFG_PATH, "rb"))
 PATHS = _cfg["paths"]
 
 # mu's event log sits beside its sink:  <...>/mu/telemetry.sqlite -> <...>/mu/events
@@ -41,11 +47,12 @@ def events_present() -> bool:
     """True if the mu event dir exists and has at least one log (gates the guard)."""
     if not os.path.isdir(MU_EVENTS):
         return False
-    for d in os.scandir(MU_EVENTS):
-        if d.is_dir():
-            for f in os.scandir(d.path):
-                if f.name.endswith(".jsonl"):
-                    return True
+    with os.scandir(MU_EVENTS) as it:
+        for d in it:
+            if d.is_dir():
+                with os.scandir(d.path) as inner:
+                    if any(f.name.endswith(".jsonl") for f in inner):
+                        return True
     return False
 
 
