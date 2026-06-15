@@ -18,6 +18,7 @@ _CONTRACT_KEYS = {
     "outcomes",
     "cost_composition_top_session",
     "top_sessions",
+    "all_sessions",
     "hallucination_by_model",
     "trend_by_day",
     "marks",
@@ -28,7 +29,7 @@ _CONTRACT_KEYS = {
     "tool_mix",
     "recall",
     "cache_econ",
-    "per_ask",
+    "per_ask_sessions",
     "meta",
     "degradation_rate",
 }

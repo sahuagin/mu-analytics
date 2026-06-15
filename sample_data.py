@@ -136,6 +136,7 @@ def _build_sink():
                 "cache_write": 0,
             },
             "top_sessions": [],
+            "all_sessions": [],
             "hallucination_by_model": [],
             "trend_by_day": [],
         }
@@ -155,7 +156,7 @@ def _build_sink():
     ]
     outcomes = [
         {"outcome": k or "unclassified", "sessions": s}
-        for k, s, c in agg(lambda r: r["outcome_class"])
+        for k, s, _c in agg(lambda r: r["outcome_class"])
     ]
 
     # hallucination rate per (fleet, model): hallu-outcomes / tool-using sessions
@@ -198,6 +199,24 @@ def _build_sink():
         for r in top
     ]
 
+    # every session, newest first — the Sessions page groups these by day.
+    all_sessions = [
+        {
+            "id": _short_id(r["fleet"], r.get("task_id")),
+            "fleet": r["fleet"],
+            "model": r["model"],
+            "kind": r["kind"],
+            "cost": round(r["cost"], 4),
+            "outcome": r["outcome_class"] or "unclassified",
+            "tool_calls": r["tools"],
+            "started": _day(r["started_at_unix_ms"] or r["ended_at_unix_ms"]),
+            "flagged": False,
+        }
+        for r in sorted(
+            rows, key=lambda r: -(r["started_at_unix_ms"] or r["ended_at_unix_ms"] or 0)
+        )
+    ]
+
     dcost, dden, dnum = defaultdict(float), defaultdict(int), defaultdict(int)
     for r in rows:
         d = _day(r["started_at_unix_ms"] or r["ended_at_unix_ms"])
@@ -228,6 +247,7 @@ def _build_sink():
         "outcomes": outcomes,
         "cost_composition_top_session": comp,
         "top_sessions": top_sessions,
+        "all_sessions": all_sessions,
         "hallucination_by_model": hallu,
         "trend_by_day": trend,
     }
@@ -255,7 +275,7 @@ def _event_slices():
             "tool_mix": panels.tool_mix(con),
             "recall": panels.recall(con),
             "cache_econ": panels.cache_econ(con),
-            "per_ask": panels.per_ask(con)["asks"],
+            "per_ask_sessions": panels.per_ask_sessions(con),
             "stop_reason_health": panels.stop_reason_health(con),
             "degradation_by_day": panels.degradation_by_day(con),
             "degradation_rate": panels.degradation_rate(con),
@@ -296,7 +316,7 @@ def build():
         ("context_compactions", []),
         ("tool_mix", []),
         ("recall", []),
-        ("per_ask", []),
+        ("per_ask_sessions", []),
         ("stop_reason_health", []),
         ("compaction", {"mu": dict(_zero_comp), "cc": dict(_zero_comp)}),
         (
