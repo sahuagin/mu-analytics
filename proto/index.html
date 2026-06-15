@@ -254,8 +254,10 @@
   .convo .who.u{color:var(--blue)} .convo .who.a{color:var(--accent)} .convo .who.t{color:var(--amber)}
   .convo .tprev{color:var(--fg-mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
   .convo .turn.open .tprev{color:var(--fg-dim)}
-  .convo .turn-b{display:none;padding:1px 12px 11px 31px;color:var(--fg-dim);line-height:1.5;white-space:pre-wrap}
+  .convo .turn-b{display:none;padding:1px 12px 11px 31px;color:var(--fg-dim);line-height:1.5;white-space:pre-wrap;word-break:break-word}
   .convo .turn.open .turn-b{display:block}
+  .convo .turn-omit{padding:6px 12px;font-family:var(--mono);font-size:10px;letter-spacing:.06em;color:var(--fg-mute);text-align:center;border-bottom:1px solid var(--border-soft);background:var(--panel-2)}
+  .convo-empty{padding:22px 12px;text-align:center;color:var(--fg-mute);font-size:12px}
   /* mark widget */
   .markbox{margin-top:14px;border:1px solid var(--accent-line);border-radius:10px;padding:13px 14px;background:var(--accent-soft)}
   .markbox h4{color:var(--accent)}
@@ -398,6 +400,8 @@ let CHARTS=[];
 function mk(id){const el=document.getElementById(id); if(!el) return null; const c=echarts.init(el,null,{renderer:'canvas'}); CHARTS.push(c); return c;}
 function disposeCharts(){CHARTS.forEach(c=>{try{c.dispose();}catch(e){}}); CHARTS=[];}
 const accent=()=>cssVar('--accent'),amber=()=>cssVar('--amber'),slate=()=>cssVar('--slate'),blue=()=>cssVar('--blue'),fgmute=()=>cssVar('--fg-mute');
+/* escape arbitrary transcript text before innerHTML — real tool output contains <, >, & and even </div> */
+const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 // fleet emphasis: BOTH fleets always render; "focus" highlights one and dims the
 // other so mu vs cc compare on one screen instead of separate ones.
 const DIM=0.24;
@@ -686,28 +690,36 @@ function sessionTable(){
   const ALL=(DATA.all_sessions&&DATA.all_sessions.length)?DATA.all_sessions:(DATA.top_sessions||[]);
   const ratio=(()=>{const co=DATA.cost_composition_top_session,t=Object.values(co).reduce((a,b)=>a+b,0);const o={};for(const k in co)o[k]=co[k]/t;return o;})();
   function compFor(s){return {input:s.cost*ratio.input,output:s.cost*ratio.output,cache_read:s.cost*ratio.cache_read,cache_write:s.cost*ratio.cache_write};}
-  const CONVO=[
-    ['u','Pick up the analytics consolidation — retire the strewn scripts.',
-      "Now that the rewrite can finally parse the event data, I want to get rid of all the one-off programs scattered around and fold the old web pages into one usable interface. Don't model the old stuff — rebuild it."],
-    ['a','Reading the real event model and cost layer before proposing anything.',
-      "Not touching the retired scripts. Reading mu's event_log.rs, the forensics classifier, the analytics sink, and cost.py so the plan is grounded in what's actually emitted — not how the old pile did it."],
-    ['t','Bash · mu analytics compact',
-      "$ mu analytics compact\nUPSERT 3,899 tasks into telemetry.sqlite\noutcome_class: 3845 narrative_no_action · 48 error_exit · 6 operator_intervention"],
-    ['a','Sink crosses both fleets; behavioral signal is thin until the enricher.',
-      "cost.py joins tokens x config rates across mu + cc cleanly. But 98.6% of tasks collapse to narrative_no_action because the classifier runs without commit/PR context — degradation signals (tool-error loops, DegradedEof, tombstones) are buildable today; clean-success needs the enricher."],
-    ['u','I want the data and a way to observe it. You design the UI.',
-      "I'm not a UI designer and I suck at it. I'm giving you the information and the questions that matter — the layout and interactions are yours to design and build. Stop handing the design back to me."],
-    ['a','Building the navigable shell — Playwright-vetted before you see it.',
-      "One shell, collapsible sidebar, the designer page as Overview, sibling pages for sessions / cost / behavioral / internal-ops, all in the same design language. Synthetic data first; you only see it if it clears the bar."],
-  ];
   const whoLabel=w=>w==='u'?'user':w==='a'?'agent':'tool';
+  // Each session's FULL conversation lives in its own sidecar (sessions/<slug>.json,
+  // written by gen_dashboard) and is fetched on demand when the row is opened — the
+  // whole point of this page is reading the entire conversation to mark the session,
+  // so nothing is bounded or clipped. The page stays light; only the opened session
+  // loads. Text is escaped (real tool output contains markup). 404 / no sidecar (or
+  // opened over file://) → a clear empty state.
+  const TXCACHE={};
+  const txSlug=id=>id.replace(/·/g,'-');  // mirrors panels._slug
+  function convoTurnsHtml(turns){
+    if(!turns||!turns.length) return `<div class="convo-empty">No transcript captured for this session.</div>`;
+    return turns.map(x=>`<div class="turn"><div class="turn-h"><span class="tchev">▶</span><span class="who ${x[0]}">${whoLabel(x[0])}</span><span class="tprev">${esc(x[1])}</span></div><div class="turn-b">${esc(x[2])}</div></div>`).join('');
+  }
+  function fillConvo(el,turns){ el.innerHTML=convoTurnsHtml(turns);
+    el.querySelectorAll('.turn-h').forEach(h=>h.addEventListener('click',()=>h.parentElement.classList.toggle('open'))); }
+  function loadConvo(el){
+    const slug=el.dataset.slug;
+    if(TXCACHE[slug]){ fillConvo(el,TXCACHE[slug]); return; }
+    fetch('sessions/'+encodeURIComponent(slug)+'.json')
+      .then(r=>{ if(!r.ok) throw new Error(r.status); return r.json(); })
+      .then(turns=>{ TXCACHE[slug]=turns; fillConvo(el,turns); })
+      .catch(()=>{ el.innerHTML=`<div class="convo-empty">No transcript captured for this session.</div>`; });
+  }
   function drill(s){ const co=compFor(s),tot=Object.values(co).reduce((a,b)=>a+b,0);
     const parts=[{v:co.cache_read,c:cssVar('--accent'),l:'cache read'},{v:co.output,c:cssVar('--blue'),l:'output'},{v:co.cache_write,c:cssVar('--amber'),l:'cache write'},{v:co.input,c:cssVar('--slate'),l:'input'}];
     return `<tr class="detail"><td colspan="7"><div class="drill">
       <div>
         <div class="convo-head"><h4 style="margin:0">Conversation · ${s.id}</h4>
           <div class="convo-tools"><button class="ct-btn" data-act="expand">⊕ expand all</button><button class="ct-btn" data-act="collapse">⊖ collapse all</button></div></div>
-        <div class="convo">${CONVO.map(t=>`<div class="turn"><div class="turn-h"><span class="tchev">▶</span><span class="who ${t[0]}">${whoLabel(t[0])}</span><span class="tprev">${t[1]}</span></div><div class="turn-b">${t[2]}</div></div>`).join('')}</div>
+        <div class="convo" data-slug="${txSlug(s.id)}"><div class="convo-empty">Loading conversation…</div></div>
         <h4 style="margin-top:16px">Cost makeup · ${money(s.cost)}</h4>
         <div class="comp-bar" style="display:flex;height:13px;border-radius:4px;overflow:hidden;margin:4px 0 0;background:var(--panel-3);border:1px solid var(--border)">${parts.map(p=>`<i style="height:100%;width:${(p.v/tot*100).toFixed(2)}%;background:${p.c}"></i>`).join('')}</div>
       </div>
@@ -768,7 +780,6 @@ function sessionTable(){
     host.querySelectorAll('.day-hdr').forEach(h=>h.addEventListener('click',()=>{const d=h.dataset.day; SS.openDays.has(d)?SS.openDays.delete(d):SS.openDays.add(d); render();}));
     host.querySelectorAll('tr.main').forEach(tr=>tr.addEventListener('click',e=>{ if(e.target.closest('.markbox'))return; const id=tr.dataset.id; SS.open=SS.open===id?null:id; render();}));
     host.querySelectorAll('.stars').forEach(sb=>sb.querySelectorAll('.st').forEach(st=>st.addEventListener('click',()=>{const n=+st.dataset.n; sb.querySelectorAll('.st').forEach(x=>x.classList.toggle('on',+x.dataset.n<=n));})));
-    host.querySelectorAll('.turn-h').forEach(h=>h.addEventListener('click',()=>h.parentElement.classList.toggle('open')));
     host.querySelectorAll('.convo-tools .ct-btn').forEach(btn=>btn.addEventListener('click',()=>{const d=btn.closest('.drill'),op=btn.dataset.act==='expand';d.querySelectorAll('.turn').forEach(t=>t.classList.toggle('open',op));}));
     host.querySelectorAll('.markbox').forEach(mb=>{
       const sb=mb.querySelector('.stars'); if(!sb)return;
@@ -781,6 +792,8 @@ function sessionTable(){
         btn.textContent='✓ saved'; refreshExportCount();
       });
     });
+    // the open session's transcript loads on demand from its sidecar (cache-first)
+    if(SS.open){ const cel=host.querySelector('tr.detail .convo[data-slug]'); if(cel) loadConvo(cel); }
   }
   document.getElementById('sess-search').addEventListener('input',e=>{SS.search=e.target.value; SS.open=null; render();});
   document.getElementById('sess-model').addEventListener('change',e=>{SS.model=e.target.value; SS.open=null; render();});

@@ -101,3 +101,32 @@ print(
     f"billed=${data['kpi']['by_kind'].get('billed', 0):,.2f}  "
     f"sessions={sum(x['sessions'] for x in data['cost_by_kind'])}"
 )
+
+# Per-session transcript sidecars (sessions/<slug>.json). The drill-down fetches these
+# on demand, so the page stays light instead of embedding ~450 MB of conversation.
+# FULL fidelity — every turn, no clipping — because this is the review-and-mark surface.
+import panels  # noqa: E402
+
+sessions_dir = os.path.join(outdir, "sessions")
+if os.environ.get("MU_ANALYTICS_DEMO"):
+    import demo_data  # noqa: E402
+
+    os.makedirs(sessions_dir, exist_ok=True)
+    demo_tx = demo_data.demo_transcripts()
+    for sid, turns in demo_tx.items():
+        with open(
+            os.path.join(sessions_dir, panels._slug(sid) + ".json"), "w", encoding="utf-8"
+        ) as f:
+            json.dump(turns, f, ensure_ascii=False, separators=(",", ":"))
+    print(f"  transcripts: wrote {len(demo_tx)} demo session sidecars -> {sessions_dir}/")
+else:
+    import engine  # noqa: E402
+
+    if engine.events_present():
+        stats = panels.write_session_transcripts(engine.connect(), sessions_dir)
+        print(
+            f"  transcripts: wrote {stats['written']} changed / {stats['total']} session "
+            f"sidecars -> {sessions_dir}/"
+        )
+    else:
+        print("  transcripts: no event log present; drill-down will show the empty state")

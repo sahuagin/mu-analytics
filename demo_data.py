@@ -73,6 +73,56 @@ def _demo_sessions():
     return out
 
 
+def demo_transcripts():
+    """A couple of fabricated full conversations so the demo screenshot shows the
+    Sessions drill-down. Keyed by _demo_sessions() ids; each value is the turn list
+    written to sessions/<slug>.json. `who` is 'u' user / 'a' agent / 't' tool."""
+    return {
+        "mu·000": [
+            [
+                "u",
+                "retire the strewn analytics scripts",
+                "Now that the rewrite parses the event data, fold the one-off scripts "
+                "into one interface. Don't model the old pile — rebuild it.",
+            ],
+            [
+                "a",
+                "Reading the real event model first",
+                "Reading event_log.rs, the forensics classifier and cost.py so the plan "
+                "is grounded in what's emitted, not how the old scripts did it.",
+            ],
+            ["t", "bash · mu analytics compact", '{"command": "mu analytics compact"}'],
+            [
+                "t",
+                "→ result · UPSERT 3,899 tasks into telemetry.sqlite",
+                "UPSERT 3,899 tasks into telemetry.sqlite\n"
+                "outcome_class: 3845 narrative_no_action · 48 error_exit",
+            ],
+        ],
+        "cc·001": [
+            [
+                "u",
+                "the drill-down shows the same fake convo for every session",
+                "You wired the session list to real data but the conversation is a "
+                "hardcoded stub. Wire it to the event log.",
+            ],
+            [
+                "a",
+                "Confirmed — the drill-down renders a module-level constant",
+                "drill(s) maps a CONVO const, not anything derived from s. Reconstructing "
+                "each session's real turns from the event log instead.",
+            ],
+            ["t", "→ result · 39 tests passed", "ruff + ty clean; 39 tests passed"],
+            [
+                "a",
+                "Per-session transcripts now flow from the event log",
+                "Each drill-down fetches its own full conversation on demand. Deep review "
+                "also lives in mu-console.",
+            ],
+        ],
+    }
+
+
 def build():
     return {
         "as_of": "2026-06-12T09:14:00",

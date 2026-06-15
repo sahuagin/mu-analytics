@@ -180,3 +180,102 @@ def both_fleets_connection(tmpdir):
             (cc_glob, "cc", engine._CC_DAEMON),
         ]
     )
+
+
+# --- transcript fixture (Sessions drill-down) ---------------------------------
+# The shared fixtures above carry the *behavioral* fields the cost/compaction
+# panels read, but NOT the conversational content session_transcripts() needs
+# (user_message.content, assistant message.content text blocks, tool_call.arguments,
+# tool_result.content). This fixture writes one mu + one cc session with those real
+# shapes — including a pure tool-use assistant turn (content is an array of non-text
+# blocks) that must be SKIPPED, never dumped as raw JSON "text".
+
+
+def _tx_mu_events():
+    def ev(i, kind, payload):
+        return {
+            "id": i,
+            "session_id": "s1",
+            "timestamp_unix_ms": _T0 + i * 60_000,
+            "actor": "agent",
+            "payload": {"kind": kind, **payload},
+        }
+
+    return [
+        ev(1, "user_message", {"content": "please fix the failing test"}),
+        ev(
+            2,
+            "assistant_message_event",
+            {"message": {"content": [{"type": "text", "text": "Looking at it now."}]}},
+        ),
+        # pure tool-use turn: content is an array with NO text block -> skipped, not dumped
+        ev(
+            3,
+            "assistant_message_event",
+            {
+                "message": {
+                    "content": [
+                        {"type": "tool_use", "name": "bash", "input": {"command": "pytest"}}
+                    ]
+                }
+            },
+        ),
+        ev(
+            4, "tool_call", {"name": "bash", "call_id": "c1", "arguments": {"command": "pytest -q"}}
+        ),
+        ev(5, "tool_result", {"call_id": "c1", "content": "3 passed", "is_error": False}),
+        ev(6, "tool_result", {"call_id": "c2", "content": "boom", "is_error": True}),
+        ev(7, "user_message", {"content": "   "}),  # blank -> skipped
+        ev(8, "user_message", {"content": "ship it"}),
+        ev(
+            9,
+            "task_telemetry",
+            {"task_id": "task-tx-1", "session_id": "s1", "model": "claude-opus-4-8"},
+        ),
+    ]
+
+
+def _tx_cc_events(session_id="txcc-0000-1111"):
+    def ev(i, kind, payload):
+        return {
+            "id": i,
+            "session_id": session_id,
+            "timestamp_unix_ms": _T0 + i * 60_000,
+            "actor": {"kind": "agent"},
+            "payload": {"kind": kind, **payload},
+        }
+
+    return [
+        ev(1, "user_message", {"content": "do the cc thing"}),
+        ev(
+            2,
+            "assistant_message_event",
+            {"message": {"content": [{"type": "text", "text": "on it"}]}},
+        ),
+        ev(3, "tool_call", {"name": "Read", "call_id": "x1", "arguments": {"path": "/etc/hosts"}}),
+        ev(
+            4, "tool_result", {"call_id": "x1", "content": "127.0.0.1 localhost", "is_error": False}
+        ),
+        # the cc bridge: sink task_id == this task_telemetry.task_id (= "cc-<uuid>")
+        ev(5, "task_telemetry", {"task_id": "cc-" + session_id, "session_id": session_id}),
+    ]
+
+
+def transcript_connection(tmpdir, cc_session="txcc-0000-1111"):
+    """A both-fleets connection over rich mu + cc sessions for transcript tests."""
+    mu_dir = os.path.join(tmpdir, "events", "txdaemon")
+    os.makedirs(mu_dir, exist_ok=True)
+    with open(os.path.join(mu_dir, "s1.jsonl"), "w") as f:
+        for e in _tx_mu_events():
+            f.write(json.dumps(e) + "\n")
+    cc_dir = os.path.join(tmpdir, "cc-events", "claude-code")
+    os.makedirs(cc_dir, exist_ok=True)
+    with open(os.path.join(cc_dir, f"{cc_session}.jsonl"), "w") as f:
+        for e in _tx_cc_events(cc_session):
+            f.write(json.dumps(e) + "\n")
+    return engine.connect(
+        sources=[
+            (os.path.join(tmpdir, "events", "*", "*.jsonl"), "mu", engine._MU_DAEMON),
+            (os.path.join(tmpdir, "cc-events", "*", "*.jsonl"), "cc", engine._CC_DAEMON),
+        ]
+    )

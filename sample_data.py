@@ -251,7 +251,10 @@ def _build_sink(mu_session_map=None):
         for r in top
     ]
 
-    # every session, newest first — the Sessions page groups these by day.
+    # every session, newest first — the Sessions page groups these by day. The
+    # drill-down transcript is NOT embedded here (the corpus is ~450 MB); it's written
+    # per-session to sessions/<slug>.json by gen_dashboard and fetched on demand,
+    # keyed by this same display id (_short_id).
     all_sessions = [
         {
             "id": _short_id(r["fleet"], r.get("task_id")),
