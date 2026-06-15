@@ -67,6 +67,7 @@ def _demo_sessions():
                 "tool_calls": 8 + (i * 7) % 120,
                 "started": (base - datetime.timedelta(days=i // 6)).isoformat(),
                 "flagged": i % 7 == 0,
+                "child": i % 11 == 0,  # a few sub-agent/branched sessions, tagged flat
             }
         )
     return out
