@@ -228,7 +228,7 @@ def convert_session(path: str):
             if t == "assistant" and isinstance(msg, dict):
                 mid = msg.get("id") or f"_n{len(asst_idx)}"
                 norm = _normalize_assistant(msg)
-                assistants[mid] = (norm["raw_usage"], norm["model"])
+                assistants[mid] = (norm.get("raw_usage") or {}, norm.get("model") or "unknown")
                 rec = {"type": "assistant", "ts": ts, **norm}
                 if mid in asst_idx:
                     records[asst_idx[mid]] = rec  # last wins, in place
@@ -374,7 +374,7 @@ def convert_session(path: str):
                 }
                 if isinstance(usage, dict) and _has_tokens(usage):
                     done["usage"] = usage
-                if ts and ask_start_ts:
+                if isinstance(ts, int) and isinstance(ask_start_ts, int) and ts and ask_start_ts:
                     done["elapsed_ms"] = max(0, ts - ask_start_ts)
                 emit({"kind": "agent"}, done, ts)
 
