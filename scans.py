@@ -13,6 +13,7 @@ Run:  ./run scans.py frustration [--daily] [--window S..E[=L]] [--tsv PATH]
 """
 
 import argparse
+import json
 import re
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -59,6 +60,67 @@ GOODBYE = re.compile(
     r"well done|see you|sleep",
     re.I,
 )
+# --- behavior_scan markers (assistant-side health, ported from behavior_scan.py).
+# Pure structure: completion claims gated on a first-person subject, verification
+# tools, announce-then-act, user redirects. Preserved verbatim for parity.
+CLAIM_RX = re.compile(
+    r"\b(i|i'?ve|i'?m|i'?ll|let me|we|we'?ve)\b[^.!?\n]{0,40}?\b(done|logged|"
+    r"fixed|added|created|updated|removed|deleted|demoted|superseded|wrote|"
+    r"saved|applied|committed|pushed|merged|renamed|installed|configured|"
+    r"verified|ran|checked|confirmed)\b",
+    re.I,
+)
+ANNOUNCE_RX = re.compile(
+    r"(i'?ll (run|do|check|read|write|edit|look)|let me (run|do|check|read|"
+    r"look|write|edit)|let'?s (run|check|look)|```)",
+    re.I,
+)
+REDIRECT_RX = re.compile(
+    r"(^|\b)(no\.?|that'?s not|that wasn'?t|i didn'?t|i did not|i wasn'?t|"
+    r"stop|actually|wait|you forgot|that'?s wrong|not what i|don'?t|"
+    r"that isn'?t|nope)\b",
+    re.I,
+)
+VERIFY_TOOLS = {
+    "read",
+    "grep",
+    "glob",
+    "code_recall",
+    "code_status",
+    "discover",
+    "memory_recall",
+    "lsp",
+    "websearch",
+    "webfetch",
+    "toolsearch",
+    "ls",
+    "monitor",
+}
+BASH_READ_RX = re.compile(
+    r"\b(cat|ls|head|tail|grep|rg|fd|find|stat|jj (st|status|log|diff|show)|"
+    r"git (st|status|log|diff|show)|--help|-h\b|sqlite3?.*\bselect\b|"
+    r"\bshow\b|\bstatus\b|\bdiff\b|\bwc\b|pwd|echo)\b",
+    re.I,
+)
+BASH_NAMES = {"bash", "shell", "run"}
+
+
+def norm_tool(name):
+    """Normalize a tool name across fleets: strip mcp__server__ wrapper, lowercase."""
+    if not name:
+        return ""
+    if name.startswith("mcp__"):
+        name = name.rsplit("__", 1)[-1]
+    return name.lower()
+
+
+def _is_verify(name, args_str):
+    n = norm_tool(name)
+    if n in VERIFY_TOOLS:
+        return True
+    return n in BASH_NAMES and bool(BASH_READ_RX.search(args_str or ""))
+
+
 ET = ZoneInfo("America/New_York")
 _EPOCH = datetime.fromtimestamp(0, tz=UTC)
 
@@ -201,6 +263,133 @@ def scan_frustration(con, explicit=(), daily=False):
     return hit_rows, all_rows, totals
 
 
+def _segment_turns(turns):
+    """Group the flat stream into [(user_text, [assistant_turns])]: one user
+    message and every assistant turn until the next user message."""
+    segs = []
+    cur_user = None
+    cur_asst = []
+    for t in turns:
+        if t["role"] == "user":
+            if cur_user is not None or cur_asst:
+                segs.append((cur_user or "", cur_asst))
+            cur_user = t["text"]
+            cur_asst = []
+        else:
+            cur_asst.append(t)
+    if cur_user is not None or cur_asst:
+        segs.append((cur_user or "", cur_asst))
+    return segs
+
+
+def _score(turns):
+    """Per-turn structural markers (verbatim from behavior_scan.py): claim→verify
+    vs claim-no-tool, announce→act, and correction release-rate."""
+    s = dict(
+        claim_no_tool=0,
+        claim_then_verify=0,
+        announce_then_act=0,
+        correction_change=0,
+        correction_same=0,
+        n_user=sum(1 for t in turns if t["role"] == "user"),
+        n_asst=sum(1 for t in turns if t["role"] == "assistant"),
+    )
+    segs = _segment_turns(turns)
+    for _utext, asst in segs:
+        turn_tools = [tc for a in asst for tc in a["tools"]]
+        turn_has_tool = bool(turn_tools)
+        turn_has_verify = any(_is_verify(n, ar) for n, ar in turn_tools)
+        for a in asst:
+            if CLAIM_RX.search(a["text"]):
+                if turn_has_verify:
+                    s["claim_then_verify"] += 1
+                elif not turn_has_tool:
+                    s["claim_no_tool"] += 1
+            if ANNOUNCE_RX.search(a["text"]) and turn_has_tool:
+                s["announce_then_act"] += 1
+    for i in range(len(segs)):
+        utext, _ = segs[i]
+        if not REDIRECT_RX.search(utext[:200]):
+            continue
+        prev = {n for a in segs[i - 1][1] for n, _ in a["tools"]} if i > 0 else None
+        post_asst = segs[i][1]
+        if not post_asst:
+            continue
+        post = {n for a in post_asst for n, _ in a["tools"]}
+        if prev is None or post != prev:
+            s["correction_change"] += 1
+        else:
+            s["correction_same"] += 1
+    denom = s["correction_change"] + s["correction_same"]
+    s["release_rate"] = (s["correction_change"] / denom) if denom else None
+    return s
+
+
+def scan_behavior(con, explicit=(), daily=False):
+    """Assistant-side health scan over the `ev` view. Returns (rows, totals):
+    rows = (ref, win, first_ts, score); totals = window -> [sessions, sum_release,
+    n_with_rr, claim_no_tool, claim_then_verify, user_msgs, earliest_dt]."""
+    # Reconstruct the turn stream per session: operator user_messages (meta
+    # filtered) + assistant_message_event blocks (text + normalized tool_call).
+    raw = con.execute(
+        """
+        SELECT fleet, session, id, ts, kind, payload
+        FROM ev
+        WHERE kind = 'assistant_message_event'
+           OR (kind = 'user_message' AND json_extract_string(payload, '$.meta') IS NULL)
+        ORDER BY fleet, session, id
+        """
+    ).fetchall()
+
+    sessions = {}  # (fleet, session) -> {"turns": [...], "first_ms": int|None}
+    for fleet, session, _id, ts, kind, payload in raw:
+        p = json.loads(payload) if isinstance(payload, str) else payload
+        ent = sessions.setdefault((fleet, session), {"turns": [], "first_ms": None})
+        if ent["first_ms"] is None and ts:
+            ent["first_ms"] = ts
+        if kind == "user_message":
+            ent["turns"].append({"role": "user", "text": p.get("content", "") or "", "tools": []})
+        else:
+            text, tools = [], []
+            for b in (p.get("message", {}) or {}).get("content", []) or []:
+                if not isinstance(b, dict):
+                    continue
+                if b.get("type") == "text":
+                    text.append(b.get("text", "") or "")
+                elif b.get("type") == "tool_call":
+                    tools.append((b.get("name", ""), json.dumps(b.get("arguments", ""))))
+            ent["turns"].append({"role": "assistant", "text": "\n".join(text), "tools": tools})
+
+    rows, totals = [], {}
+    for (fleet, session), ent in sessions.items():
+        s = _score(ent["turns"])
+        if s["n_user"] < 2:
+            continue
+        first_ts = (
+            datetime.fromtimestamp(ent["first_ms"] / 1000, tz=UTC) if ent["first_ms"] else None
+        )
+        win = _window_of(first_ts, explicit, daily)
+        t = totals.setdefault(win, [0, 0.0, 0, 0, 0, 0, first_ts])
+        t[0] += 1
+        if s["release_rate"] is not None:
+            t[1] += s["release_rate"]
+            t[2] += 1
+        t[3] += s["claim_no_tool"]
+        t[4] += s["claim_then_verify"]
+        t[5] += s["n_user"]
+        if first_ts is not None and (t[6] is None or first_ts < t[6]):
+            t[6] = first_ts
+        rows.append((_session_ref(fleet, session), win, first_ts, s))
+
+    rows.sort(
+        key=lambda r: (
+            -r[3]["claim_no_tool"],
+            r[3]["release_rate"] if r[3]["release_rate"] is not None else 0.0,
+        )
+    )
+    return rows, totals
+
+
 def render(hit_rows, all_rows, totals, explicit=(), tsv=None):
     print(f"{'density':>8} {'hits':>5} {'window':<9} {'started(ET)':<12} ref / markers")
     for ref, win, h, n, mk, ts, end in hit_rows[:20]:
@@ -237,9 +426,77 @@ def render(hit_rows, all_rows, totals, explicit=(), tsv=None):
         )
 
 
+def render_behavior(rows, totals, explicit=(), tsv=None):
+    def rr(s):
+        return "  -  " if s["release_rate"] is None else f"{s['release_rate']:.2f}"
+
+    print(f"{'cnt':>4} {'verify':>6} {'rel':>5} {'ann':>4} {'window':<9} {'started(ET)':<12} ref")
+    print(
+        "  (cnt=claim_no_tool[NEG] verify=claim_then_verify[POS] rel=release ann=announce_then_act)"
+    )
+    for ref, win, ts, s in rows[:20]:
+        tss = ts.astimezone(ET).strftime("%m-%d %H:%M") if ts else ""
+        print(
+            f"{s['claim_no_tool']:>4} {s['claim_then_verify']:>6} {rr(s):>5} "
+            f"{s['announce_then_act']:>4} {win:<9} {tss:<12} {ref[:48]}"
+        )
+
+    exp_labels = {lbl for lbl, _, _ in explicit}
+    shown = {r[0] for r in rows[:20]}
+    extra = [r for r in rows if r[1] in exp_labels and r[0] not in shown]
+    if extra:
+        print("\nexplicit-window sessions below top-20:")
+        for ref, win, ts, s in extra:
+            tss = ts.astimezone(ET).strftime("%m-%d %H:%M") if ts else ""
+            print(
+                f"{s['claim_no_tool']:>4} {s['claim_then_verify']:>6} {rr(s):>5} "
+                f"{s['announce_then_act']:>4} {win:<9} {tss:<12} {ref[:48]}"
+            )
+
+    if tsv:
+        with open(tsv, "w") as fh:
+            fh.write(
+                "session_ref\twindow\tfirst_ts\tn_user\tn_asst\tclaim_no_tool\t"
+                "claim_then_verify\tannounce_then_act\tcorrection_change\t"
+                "correction_same\trelease_rate\n"
+            )
+            for ref, win, ts, s in rows:
+                fh.write(
+                    "\t".join(
+                        map(
+                            str,
+                            [
+                                ref,
+                                win,
+                                ts.isoformat() if ts else "",
+                                s["n_user"],
+                                s["n_asst"],
+                                s["claim_no_tool"],
+                                s["claim_then_verify"],
+                                s["announce_then_act"],
+                                s["correction_change"],
+                                s["correction_same"],
+                                "" if s["release_rate"] is None else f"{s['release_rate']:.4f}",
+                            ],
+                        )
+                    )
+                    + "\n"
+                )
+
+    print(
+        f"\n{'window':<11} {'sessions':>8} {'mean_rel':>8} {'claim_no_tool':>13} "
+        f"{'claim_verify':>12} {'cnt/100msg':>11}"
+    )
+    for win, (ns, srel, nrr, cnt, ver, nm, _dt) in sorted(
+        totals.items(), key=lambda kv: (kv[1][6] or _EPOCH, kv[0])
+    ):
+        mr = f"{srel / nrr:.2f}" if nrr else "  -  "
+        print(f"{win:<11} {ns:>8} {mr:>8} {cnt:>13} {ver:>12} {100 * cnt / max(nm, 1):>11.2f}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("scan", choices=["frustration"], help="which scan to run")
+    ap.add_argument("scan", choices=["frustration", "behavior"], help="which scan to run")
     ap.add_argument("--window", action="append", default=[], metavar="START..END[=LABEL]")
     ap.add_argument("--daily", action="store_true", help="bucket by ET calendar day")
     ap.add_argument("--tsv", metavar="PATH", help="dump one row per qualifying session")
@@ -247,8 +504,12 @@ def main():
 
     explicit = [parse_window(w) for w in args.window]
     con = engine.connect()  # the unified ev view, both fleets
-    hit_rows, all_rows, totals = scan_frustration(con, explicit=explicit, daily=args.daily)
-    render(hit_rows, all_rows, totals, explicit=explicit, tsv=args.tsv)
+    if args.scan == "frustration":
+        hit_rows, all_rows, totals = scan_frustration(con, explicit=explicit, daily=args.daily)
+        render(hit_rows, all_rows, totals, explicit=explicit, tsv=args.tsv)
+    else:
+        rows, totals = scan_behavior(con, explicit=explicit, daily=args.daily)
+        render_behavior(rows, totals, explicit=explicit, tsv=args.tsv)
 
 
 if __name__ == "__main__":
