@@ -33,6 +33,7 @@ import collections
 import glob
 import json
 import os
+import re
 import sys
 from datetime import datetime
 
@@ -197,6 +198,24 @@ def _normalize_assistant(m: dict) -> dict[str, object]:
     }
 
 
+# Harness-injected user-turn content is NOT operator language: skill bodies arrive
+# as isMeta records (array-form text), and slash commands / command output / system
+# notifications carry a structural tag at the start of the text. We still EMIT these
+# as user_message (no information loss) but mark them `meta: true` so operator-
+# language analytics (frustration/behavior scans, ML labels) can filter to operator
+# speech only. Without this, "Base directory for this skill: …" and "<task-notification>"
+# get counted as operator frustration.
+_INJECTED_RX = re.compile(
+    r"^\s*<(command-name|command-message|command-args|local-command-stdout|"
+    r"local-command-caveat|system-reminder|task-notification|bash-input|bash-stdout|"
+    r"bash-stderr)\b"
+)
+
+
+def _is_injected_text(text: str) -> bool:
+    return bool(text) and bool(_INJECTED_RX.match(text))
+
+
 def convert_session(path: str):
     """Return (session_id, [mu-core SessionEvent dicts]) or None if no assistant
     messages. Emits the full ordered stream; ids are monotonic from 1."""
@@ -236,9 +255,19 @@ def convert_session(path: str):
                     asst_idx[mid] = len(records)
                     records.append(rec)
             elif t == "user" and isinstance(msg, dict):
+                # isMeta marks harness-injected turns (e.g. skill bodies); the
+                # per-text _is_injected_text catches tagged command/notification text.
+                is_meta = bool(o.get("isMeta"))
                 c = msg.get("content")
                 if isinstance(c, str):
-                    records.append({"type": "user_text", "ts": ts, "content": c})
+                    records.append(
+                        {
+                            "type": "user_text",
+                            "ts": ts,
+                            "content": c,
+                            "meta": is_meta or _is_injected_text(c),
+                        }
+                    )
                 elif isinstance(c, list):
                     # Emit per-block in document order: tool_result blocks become
                     # ToolResult; text blocks (user text in array form) become
@@ -260,7 +289,14 @@ def convert_session(path: str):
                         elif bt == "text":
                             txt = b.get("text", "") or ""
                             if txt:
-                                records.append({"type": "user_text", "ts": ts, "content": txt})
+                                records.append(
+                                    {
+                                        "type": "user_text",
+                                        "ts": ts,
+                                        "content": txt,
+                                        "meta": is_meta or _is_injected_text(txt),
+                                    }
+                                )
                         else:
                             _UNMAPPED_BLOCKS[f"user:{bt}"] += 1
             elif t:
@@ -327,7 +363,10 @@ def convert_session(path: str):
     asst_turns_in_ask = 0
     for rec in records:
         if rec["type"] == "user_text":
-            emit({"kind": "user"}, {"kind": "user_message", "content": rec["content"]}, rec["ts"])
+            payload = {"kind": "user_message", "content": rec["content"]}
+            if rec.get("meta"):
+                payload["meta"] = True  # harness-injected, not operator language
+            emit({"kind": "user"}, payload, rec["ts"])
             ask_start_ts = rec["ts"] or ask_start_ts
             asst_turns_in_ask = 0
         elif rec["type"] == "tool_result":

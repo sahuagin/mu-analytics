@@ -89,6 +89,14 @@ class TestEngine(unittest.TestCase):
             daemons = con.execute("SELECT DISTINCT daemon FROM ev").fetchall()
             self.assertEqual(daemons, [("testdaemon01",)])
 
+    def test_session_key_is_daemon_colon_session_id(self):
+        # the canonical session key disambiguates sessions within a daemon; daemon
+        # stays the bare process id (a daemon hosts >1 session file).
+        with tempfile.TemporaryDirectory() as d:
+            con = fixtures.fixture_connection(d)
+            sessions = {s for (s,) in con.execute("SELECT DISTINCT session FROM ev").fetchall()}
+            self.assertEqual(sessions, {"testdaemon01:session-1"})
+
     def test_payload_is_json_not_kind_only_map(self):
         # the whole point of pinning payload:JSON — inner keys must resolve
         with tempfile.TemporaryDirectory() as d:
