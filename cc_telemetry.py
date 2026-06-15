@@ -1,17 +1,35 @@
 #!/usr/bin/env python3
-"""Emit current-mu-core TaskTelemetry (+ ToolCall) events from cc session logs.
+"""Emit the FULL mu-core SessionEvent stream from claude-code (cc) session logs.
 
-MVP spine: one cc session -> one `task_telemetry` event (exit_reason=done,
-session-summed deduped tokens) preceded by its `tool_call` events (so the
-mu-042 projector's tool_call_count is honest). The installed `mu analytics
-compact` consumes these directly. No mu rebuild, no mu-repo edits.
+WS2 of the cc full-fidelity event unification (bead mu-cc-event-unification-lkma.2;
+contract: specs/architecture/cc-event-mapping.md in the mu repo).
 
-Calibration knobs intentionally simple for the MVP (refine by looking):
-  - one cc session == one task
-  - exit_reason == "done" for every cc session
-  - provider_kind == "claude_code" so cc is visibly distinct from mu's anthropic
+cc and mu sessions must sit on ONE event schema so analytics (markers, ML,
+dashboards) read a single substrate. The prior MVP collapsed an entire cc
+session into ONE `task_telemetry` summary + bare `tool_call` stubs — a contentless
+record that told us nothing about the session. This emitter converts each cc
+session into the rich, ordered `SessionEvent` stream the schema already supports:
+
+  SessionCreated
+  -> per turn: UserMessage | (AssistantMessageEvent + ToolCall*) | ToolResult* | Done
+  -> TaskTelemetry   (session-summed; UNCHANGED from the MVP, so sink cost parity holds)
+
+The installed `mu analytics compact` consumes these directly (it keys on
+`task_telemetry` for the sink; the rich kinds feed engine.py). No mu rebuild.
+
+Fidelity rules (operator requirement 2026-06-15 — preserve session information):
+  - mu-consistent NORMALIZATIONS (not losses): cc `stop_sequence` -> EndTurn
+    (matches anthropic.rs:678); cc `thinking{thinking,signature}` -> text-only
+    (matches anthropic.rs:777 / accumulate.rs — mu drops the signature for its
+    own sessions too).
+  - NO SILENT DROPS: unrecognized assistant content-block types and skipped cc
+    record types are COUNTED and printed; an unmapped block is preserved as a
+    visible `[cc-unmapped-block:<type>]` text marker.
+  - documented deferrals (no analytical value / no mu slot): non-token usage
+    metadata (service_tier, server_tool_use, speed, ...), sub-agent `caller`.
 """
 
+import collections
 import glob
 import json
 import os
@@ -22,7 +40,8 @@ from datetime import datetime
 # -> lib/mu_anthropic_py.*.so). The SAME typed front door the proxy/drift job
 # uses: is_valid_response_message() returns False when the wire shape no longer
 # matches the typed model (Anthropic changed the spec) OR the message isn't
-# Anthropic-shaped (openrouter cc account). We count those and fall back.
+# Anthropic-shaped (openrouter cc account). We count those for an integrity
+# signal; content/usage are read from the raw record (complete for our mapping).
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
 try:
     import mu_anthropic_py as _MA
@@ -30,6 +49,27 @@ except Exception:
     _MA = None
 
 _PARSE = {"typed": 0, "fallback": 0}
+# Visibility counters (printed at the end) — the anti-silent-drop guard.
+_UNMAPPED_BLOCKS: "collections.Counter[str]" = collections.Counter()
+_SKIPPED_TYPES: "collections.Counter[str]" = collections.Counter()
+
+# cc record `type` values that are UI/metadata, not conversation turns. Counted
+# (so a new one shows up loudly) but intentionally not mapped to a SessionEvent.
+_NONCONVERSATION_TYPES = {
+    "attachment",
+    "last-prompt",
+    "bridge-session",
+    "system",
+    "permission-mode",
+    "ai-title",
+    "mode",
+    "file-history-snapshot",
+    "queue-operation",
+    "pr-link",
+    "agent-name",
+    "custom-title",
+    "summary",
+}
 
 
 def iso_ms(ts: str) -> int:
@@ -39,35 +79,135 @@ def iso_ms(ts: str) -> int:
         return 0
 
 
-def extract_message(message: dict):
-    """(usage, model, [(tool_name, tool_id)]) for one cc assistant message.
-    Typed via mu-anthropic when valid; hand-rolled fallback otherwise (counted)."""
+def _normalize_stop(s) -> str:
+    """cc stop_reason -> mu StopReason (snake_case). stop_sequence folds to
+    end_turn (mu's own anthropic provider does this, anthropic.rs:678)."""
+    return {
+        "tool_use": "tool_use",
+        "end_turn": "end_turn",
+        "max_tokens": "max_tokens",
+        "stop_sequence": "end_turn",
+    }.get(s, "end_turn")
+
+
+def _normalize_usage(u: dict) -> dict:
+    """cc usage -> mu Usage (only token fields; non-token metadata deferred).
+    input/output always present (mu Usage requires them); rest are optional and
+    omitted when absent/zero. `.get(k) or 0` coerces explicit JSON null."""
+    out = {
+        "input_tokens": int(u.get("input_tokens") or 0),
+        "output_tokens": int(u.get("output_tokens") or 0),
+    }
+    cr = int(u.get("cache_read_input_tokens") or 0)
+    if cr:
+        out["cache_read_input_tokens"] = cr
+    cw = int(u.get("cache_creation_input_tokens") or 0)
+    if cw:
+        out["cache_creation_input_tokens"] = cw
+    cc = u.get("cache_creation") or {}
+    c5 = int(cc.get("ephemeral_5m_input_tokens") or 0)
+    if c5:
+        out["cache_creation_5m_input_tokens"] = c5
+    c1 = int(cc.get("ephemeral_1h_input_tokens") or 0)
+    if c1:
+        out["cache_creation_1h_input_tokens"] = c1
+    return out
+
+
+def _has_tokens(usage: dict) -> bool:
+    return bool(usage.get("input_tokens") or usage.get("output_tokens"))
+
+
+def _stringify_result(content) -> str:
+    """cc tool_result.content is a string OR a list of blocks. Flatten to the
+    String mu's ToolResult holds, without dropping anything."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for b in content:
+            if isinstance(b, dict) and b.get("type") == "text":
+                parts.append(b.get("text", "") or "")
+            else:
+                parts.append(json.dumps(b, separators=(",", ":")))
+        return "\n".join(parts)
+    return json.dumps(content, separators=(",", ":"))
+
+
+def _normalize_assistant(m: dict) -> dict:
+    """Turn one cc assistant message into the pieces of an AssistantMessageEvent.
+
+    Returns {model, stop_reason, usage, blocks, tool_uses, raw_usage}. `blocks`
+    are mu-core ContentBlock JSON; `tool_uses` drive standalone ToolCall events;
+    `raw_usage` feeds the UNCHANGED session-sum (cost parity)."""
     if _MA is not None:
-        s = json.dumps(message)
-        if _MA.is_valid_response_message(s):
-            norm = json.loads(_MA.parse_response_message(s))
-            tools = [
-                (b.get("name", "unknown"), b.get("id", ""))
-                for b in (norm.get("content") or [])
-                if b.get("type") == "tool_use"
-            ]
-            _PARSE["typed"] += 1
-            return (norm.get("usage") or {}, norm.get("model") or "unknown", tools)
-    _PARSE["fallback"] += 1
-    tools = [
-        (b.get("name", "unknown"), b.get("id", ""))
-        for b in (message.get("content") or [])
-        if isinstance(b, dict) and b.get("type") == "tool_use"
-    ]
-    return (message.get("usage") or {}, message.get("model") or "unknown", tools)
+        try:
+            if _MA.is_valid_response_message(json.dumps(m)):
+                _PARSE["typed"] += 1
+            else:
+                _PARSE["fallback"] += 1
+        except Exception:
+            _PARSE["fallback"] += 1
+    else:
+        _PARSE["fallback"] += 1
+
+    model = m.get("model") or "unknown"
+    stop = _normalize_stop(m.get("stop_reason"))
+    raw_usage = m.get("usage") or {}
+    usage = _normalize_usage(raw_usage)
+
+    blocks = []
+    tool_uses = []
+    content = m.get("content")
+    if isinstance(content, str):
+        if content:
+            blocks.append({"type": "text", "text": content})
+    elif isinstance(content, list):
+        for b in content:
+            if not isinstance(b, dict):
+                continue
+            bt = b.get("type")
+            if bt == "text":
+                blocks.append({"type": "text", "text": b.get("text", "") or ""})
+            elif bt == "thinking":
+                # signature dropped (mu-consistent: thinking is display text only).
+                blocks.append({"type": "thinking", "text": b.get("thinking", "") or ""})
+            elif bt == "tool_use":
+                tid = b.get("id", "") or ""
+                name = b.get("name", "unknown") or "unknown"
+                inp = b.get("input", {})
+                if not isinstance(inp, (dict, list)):
+                    inp = {} if inp is None else inp
+                blocks.append({"type": "tool_call", "id": tid, "name": name, "arguments": inp})
+                tool_uses.append({"id": tid, "name": name, "input": inp})
+            else:
+                # NO SILENT DROP: count + leave a visible marker.
+                _UNMAPPED_BLOCKS[str(bt)] += 1
+                blocks.append({"type": "text", "text": f"[cc-unmapped-block:{bt}]"})
+
+    return {
+        "model": model,
+        "stop_reason": stop,
+        "usage": usage,
+        "blocks": blocks,
+        "tool_uses": tool_uses,
+        "raw_usage": raw_usage,
+    }
 
 
 def convert_session(path: str):
-    """Return (session_id, [mu-core SessionEvent dicts]) or None if no assistant msgs."""
-    # Dedup assistant usage by message id (streaming repeats the id with growing
-    # usage; last record wins — mirrors mu_stats.sql cc_calls QUALIFY).
-    assistants = {}  # msg_id -> (usage, model)
-    tool_calls = []  # (name, call_id)
+    """Return (session_id, [mu-core SessionEvent dicts]) or None if no assistant
+    messages. Emits the full ordered stream; ids are monotonic from 1."""
+    # Pass 1: collect ordered conversation records, deduping assistant messages
+    # by id (streaming repeats the id with growing usage; last record wins —
+    # mirrors mu_stats.sql cc_calls QUALIFY). `assistants` keeps raw usage for
+    # the UNCHANGED session-sum so the sink's TaskTelemetry is byte-for-byte
+    # what the MVP produced (cost parity).
+    records = []  # ordered: {"type": user_text|tool_result|assistant, "ts":..., ...}
+    asst_idx = {}  # mid -> index in records
+    assistants = {}  # mid -> (raw_usage, model) for the session sum
     first_ts = last_ts = None
 
     with open(path) as f:
@@ -83,28 +223,59 @@ def convert_session(path: str):
             if ts:
                 first_ts = ts if first_ts is None else min(first_ts, ts)
                 last_ts = ts if last_ts is None else max(last_ts, ts)
-            if o.get("type") == "assistant" and isinstance(o.get("message"), dict):
-                m = o["message"]
-                mid = m.get("id") or f"_n{len(assistants)}"
-                usage, model, tools = extract_message(m)
-                assistants[mid] = (usage, model)
-                tool_calls.extend(tools)
+            t = o.get("type")
+            msg = o.get("message")
+            if t == "assistant" and isinstance(msg, dict):
+                mid = msg.get("id") or f"_n{len(asst_idx)}"
+                norm = _normalize_assistant(msg)
+                assistants[mid] = (norm["raw_usage"], norm["model"])
+                rec = {"type": "assistant", "ts": ts, **norm}
+                if mid in asst_idx:
+                    records[asst_idx[mid]] = rec  # last wins, in place
+                else:
+                    asst_idx[mid] = len(records)
+                    records.append(rec)
+            elif t == "user" and isinstance(msg, dict):
+                c = msg.get("content")
+                if isinstance(c, str):
+                    records.append({"type": "user_text", "ts": ts, "content": c})
+                elif isinstance(c, list):
+                    # Emit per-block in document order: tool_result blocks become
+                    # ToolResult; text blocks (user text in array form) become
+                    # UserMessage — never dropped. Anything else is counted.
+                    for b in c:
+                        if not isinstance(b, dict):
+                            continue
+                        bt = b.get("type")
+                        if bt == "tool_result":
+                            records.append(
+                                {
+                                    "type": "tool_result",
+                                    "ts": ts,
+                                    "call_id": b.get("tool_use_id", "") or "",
+                                    "content": _stringify_result(b.get("content")),
+                                    "is_error": bool(b.get("is_error", False)),
+                                }
+                            )
+                        elif bt == "text":
+                            txt = b.get("text", "") or ""
+                            if txt:
+                                records.append({"type": "user_text", "ts": ts, "content": txt})
+                        else:
+                            _UNMAPPED_BLOCKS[f"user:{bt}"] += 1
+            elif t:
+                _SKIPPED_TYPES[t] += 1
 
     if not assistants:
         return None
 
+    # Session sum (UNCHANGED from MVP — guarantees TaskTelemetry cost parity).
     pt = ct = cr = cw = cw5 = cw1 = 0
-    # Dominant *real* model: cc tags system-injected turns with "<synthetic>";
-    # pick the most frequent model that isn't synthetic/unknown.
-    import collections
-
     mc = collections.Counter(
         mdl for _u, mdl in assistants.values() if mdl and mdl not in ("<synthetic>", "unknown")
     )
     model = mc.most_common(1)[0][0] if mc else "unknown"
     for usage, _mdl in assistants.values():
-        # `.get(k, 0)` returns None when the key exists but is null (work/
-        # openrouter accounts do this) — coerce with `or 0`.
         pt += usage.get("input_tokens") or 0
         ct += usage.get("output_tokens") or 0
         cr += usage.get("cache_read_input_tokens") or 0
@@ -116,29 +287,90 @@ def convert_session(path: str):
     sid = os.path.basename(path)
     if sid.endswith(".jsonl"):
         sid = sid[:-6]
-    # Serving path drives cost_kind: the openrouter account is pay-per-token
-    # (billed); personal/work are Anthropic subscription (claude_code).
+    # Serving path drives cost_kind: openrouter account is pay-per-token (billed);
+    # personal/work are Anthropic subscription (claude_code).
     provider = "openrouter" if "/.claude-openrouter/" in path else "claude_code"
 
+    # Pass 2: assign monotonic ids, expand to the SessionEvent stream in order.
     events = []
-    eid = 1
-    for name, cid in tool_calls:
+    counter = [0]
+    call_name = {}  # call_id -> tool name, for ToolResult actor attribution
+
+    def emit(actor: dict, payload: dict, ts):
+        counter[0] += 1
         events.append(
             {
-                "id": eid,
+                "id": counter[0],
                 "session_id": sid,
-                "timestamp_unix_ms": first_ts or 0,
-                "actor": {"kind": "agent"},
-                "payload": {
-                    "kind": "tool_call",
-                    "call_id": cid or f"c{eid}",
-                    "name": name,
-                    "arguments": {},
-                },
+                "timestamp_unix_ms": ts or 0,
+                "actor": actor,
+                "payload": payload,
             }
         )
-        eid += 1
 
+    emit(
+        {"kind": "system"},
+        {"kind": "session_created", "provider_kind": provider, "model": model},
+        first_ts,
+    )
+
+    ask_start_ts = first_ts
+    asst_turns_in_ask = 0
+    for rec in records:
+        if rec["type"] == "user_text":
+            emit({"kind": "user"}, {"kind": "user_message", "content": rec["content"]}, rec["ts"])
+            ask_start_ts = rec["ts"] or ask_start_ts
+            asst_turns_in_ask = 0
+        elif rec["type"] == "tool_result":
+            emit(
+                {"kind": "tool", "name": call_name.get(rec["call_id"], "unknown")},
+                {
+                    "kind": "tool_result",
+                    "call_id": rec["call_id"],
+                    "content": rec["content"],
+                    "is_error": rec["is_error"],
+                },
+                rec["ts"],
+            )
+        elif rec["type"] == "assistant":
+            message = {"content": rec["blocks"], "stop_reason": rec["stop_reason"]}
+            if _has_tokens(rec["usage"]):
+                message["usage"] = rec["usage"]
+            emit(
+                {"kind": "agent"},
+                {"kind": "assistant_message_event", "message": message},
+                rec["ts"],
+            )
+            asst_turns_in_ask += 1
+            # Standalone ToolCall events: the projector's tool_call_count reads
+            # these (and tool analytics). Now with REAL call_id + arguments.
+            for tu in rec["tool_uses"]:
+                cid = tu["id"] or f"c{counter[0] + 1}"
+                call_name[cid] = tu["name"]
+                emit(
+                    {"kind": "agent"},
+                    {
+                        "kind": "tool_call",
+                        "call_id": cid,
+                        "name": tu["name"],
+                        "arguments": tu["input"],
+                    },
+                    rec["ts"],
+                )
+            # Done on a terminal turn (one per ask round-trip; tool_use turns continue).
+            if rec["stop_reason"] in ("end_turn", "max_tokens"):
+                done = {
+                    "kind": "done",
+                    "stop_reason": rec["stop_reason"],
+                    "turn_count": asst_turns_in_ask,
+                }
+                if _has_tokens(rec["usage"]):
+                    done["usage"] = rec["usage"]
+                if rec["ts"] and ask_start_ts:
+                    done["elapsed_ms"] = max(0, rec["ts"] - ask_start_ts)
+                emit({"kind": "agent"}, done, rec["ts"])
+
+    # Session-summed TaskTelemetry (UNCHANGED fields — sink contract / cost parity).
     tt = {
         "kind": "task_telemetry",
         "task_id": f"cc-{sid}",
@@ -164,16 +396,8 @@ def convert_session(path: str):
         tt["cache_write_5m_tokens"] = cw5
     if cw1:
         tt["cache_write_1h_tokens"] = cw1
+    emit({"kind": "system"}, tt, last_ts)
 
-    events.append(
-        {
-            "id": eid,
-            "session_id": sid,
-            "timestamp_unix_ms": last_ts or 0,
-            "actor": {"kind": "system"},
-            "payload": tt,
-        }
-    )
     return sid, events
 
 
@@ -192,7 +416,8 @@ def main():
         files.extend(sorted(glob.glob(os.path.expanduser(pat))))
     daemon_dir = os.path.join(out_dir, "claude-code")
     os.makedirs(daemon_dir, exist_ok=True)
-    n_sessions = n_tasks = n_tools = 0
+    n_sessions = n_events = 0
+    kinds = collections.Counter()
     for f in files:
         try:
             res = convert_session(f)
@@ -204,12 +429,23 @@ def main():
         with open(os.path.join(daemon_dir, f"{sid}.jsonl"), "w") as out:
             for ev in events:
                 out.write(json.dumps(ev, separators=(",", ":")) + "\n")
+                kinds[ev["payload"]["kind"]] += 1
         n_sessions += 1
-        n_tasks += 1
-        n_tools += sum(1 for e in events if e["payload"]["kind"] == "tool_call")
-    print(f"emitted {n_sessions} session(s), {n_tasks} task_telemetry, {n_tools} tool_call events")
+        n_events += len(events)
+    print(f"emitted {n_sessions} session(s), {n_events} events")
+    print("  kinds: " + ", ".join(f"{k}={n}" for k, n in kinds.most_common()))
     note = "" if _MA else "  [mu_anthropic_py NOT importable — all fallback; build the wheel]"
     print(f"  parse: {_PARSE['typed']} typed (mu-anthropic), {_PARSE['fallback']} fallback{note}")
+    if _UNMAPPED_BLOCKS:
+        print(
+            "  UNMAPPED blocks (preserved as markers, not dropped): "
+            + ", ".join(f"{k}={n}" for k, n in _UNMAPPED_BLOCKS.most_common())
+        )
+    if _SKIPPED_TYPES:
+        print(
+            "  skipped non-conversation cc record types: "
+            + ", ".join(f"{k}={n}" for k, n in _SKIPPED_TYPES.most_common(20))
+        )
 
 
 if __name__ == "__main__":
