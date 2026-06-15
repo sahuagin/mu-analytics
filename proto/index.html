@@ -201,6 +201,20 @@
   table.sess thead th .ar{opacity:.4;font-size:9px;margin-left:3px}
   table.sess thead th.act{color:var(--fg-dim)} table.sess thead th.act .ar{opacity:1;color:var(--accent)}
   table.sess tbody td{padding:11px 12px;border-bottom:1px solid var(--border-soft);vertical-align:middle}
+  /* sessions: day breakout + filter bar */
+  .fin{background:var(--panel-2);color:var(--fg);border:1px solid var(--border);border-radius:7px;padding:5px 9px;font-family:var(--mono);font-size:11px}
+  .fin::placeholder{color:var(--fg-mute)}
+  .day-grp{border:1px solid var(--border);border-radius:10px;margin-top:10px;overflow:hidden;background:var(--panel)}
+  .day-hdr{display:flex;align-items:center;gap:11px;padding:10px 13px;cursor:pointer;user-select:none;transition:background .12s}
+  .day-hdr:hover{background:var(--panel-2)}
+  .day-grp.open .day-hdr{background:var(--panel-2);border-bottom:1px solid var(--border-soft)}
+  .day-hdr .chev{transition:transform .15s} .day-grp.open .day-hdr .chev{transform:rotate(90deg);color:var(--accent)}
+  .day-hdr .d{font-family:var(--mono);font-weight:600;font-size:13px}
+  .day-hdr .dm{font-size:11.5px;color:var(--fg-mute);font-family:var(--mono)}
+  .day-hdr .df{margin-left:auto;display:flex;gap:10px;font-size:11px;font-family:var(--mono)}
+  .day-hdr .df .mu{color:var(--accent)} .day-hdr .df .cc{color:var(--amber)}
+  .day-body{display:none} .day-grp.open .day-body{display:block}
+  .day-body table.sess{margin-top:0} .day-body table.sess tbody tr:last-child td{border-bottom:none}
   table.sess tbody tr.main{cursor:pointer;transition:background .12s}
   table.sess tbody tr.main:hover,table.sess tbody tr.main.open{background:var(--panel-2)}
   td.r{text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums}
@@ -435,19 +449,24 @@ function renderOverview(v){
 
 /* ---------- SESSIONS ---------- */
 function renderSessions(v){
-  v.innerHTML = pageHead('Sessions','Every session across both harnesses. Click a row to open it as a conversation and mark it — your marks become the ground-truth points on the trends.','both')+`
+  const all=(DATA.all_sessions&&DATA.all_sessions.length)?DATA.all_sessions:(DATA.top_sessions||[]);
+  const models=[...new Set(all.map(s=>s.model))].sort();
+  const outs=[...new Set(all.map(s=>s.outcome))].sort();
+  const opt=(arr,ph)=>`<option value="">${ph}</option>`+arr.map(x=>`<option>${x}</option>`).join('');
+  v.innerHTML = pageHead('Sessions',`All ${n0.format(all.length)} sessions across both harnesses, grouped by day. Filter, or expand a day; click a row to open it and rate. Fleet focus dims the off-fleet rows.`,'both')+`
     <div class="panel">
-      <div class="ph" style="align-items:center">
-        <div><div class="ttl">All sessions</div><div class="desc">sortable · ⚑ = operator-marked · click to drill into the transcript and rate</div></div>
-        <div class="tbl-tools"><button class="ct-btn" id="export-marks">⭳ export marks</button><div class="toggle" id="tg-flag"><span class="sw2"></span> only ⚑ marked</div></div>
+      <div class="ph" style="align-items:center;flex-wrap:wrap;gap:10px">
+        <div><div class="ttl">All sessions</div><div class="desc" id="sess-count">—</div></div>
+        <div class="tbl-tools">
+          <input id="sess-search" class="fin" placeholder="search id / model" style="width:130px">
+          <select id="sess-model" class="fin">${opt(models,'all models')}</select>
+          <select id="sess-outcome" class="fin">${opt(outs,'all outcomes')}</select>
+          <button class="ct-btn" id="sess-expand">⊕ expand all</button>
+          <button class="ct-btn" id="export-marks">⭳ export marks</button>
+          <div class="toggle" id="tg-flag"><span class="sw2"></span> only ⚑ marked</div>
+        </div>
       </div>
-      <table class="sess" id="sess"><thead><tr>
-        <th style="width:22px"></th><th data-sort="started">Started <span class="ar">▲▼</span></th>
-        <th data-sort="fleet">Harness <span class="ar">▲▼</span></th><th data-sort="model">Model <span class="ar">▲▼</span></th>
-        <th data-sort="kind">Kind <span class="ar">▲▼</span></th><th data-sort="outcome">Outcome <span class="ar">▲▼</span></th>
-        <th data-sort="tool_calls" class="r">Tool calls <span class="ar">▲▼</span></th>
-        <th data-sort="cost" class="r act">Cost <span class="ar">▲▼</span></th>
-      </tr></thead><tbody id="sbody"></tbody></table>
+      <div id="sess-days"></div>
     </div>`;
   sessionTable();
 }
@@ -658,9 +677,11 @@ function degTrend(id){ const c=mk(id); if(!c)return; const t=trendData(), mp=mar
 }
 
 /* ======================= sessions table (interactive) ======================= */
-let TBL={sortKey:'cost',sortDir:-1,flaggedOnly:false,open:null};
+let SS={search:'',model:'',outcome:'',flaggedOnly:false,openDays:null,open:null};
 function sessionTable(){
-  const body=document.getElementById('sbody'); if(!body)return;
+  const host=document.getElementById('sess-days'); if(!host)return;
+  SS={search:'',model:'',outcome:'',flaggedOnly:false,openDays:null,open:null};  // fresh each page entry
+  const ALL=(DATA.all_sessions&&DATA.all_sessions.length)?DATA.all_sessions:(DATA.top_sessions||[]);
   const ratio=(()=>{const co=DATA.cost_composition_top_session,t=Object.values(co).reduce((a,b)=>a+b,0);const o={};for(const k in co)o[k]=co[k]/t;return o;})();
   function compFor(s){return {input:s.cost*ratio.input,output:s.cost*ratio.output,cache_read:s.cost*ratio.cache_read,cache_write:s.cost*ratio.cache_write};}
   const CONVO=[
@@ -680,7 +701,7 @@ function sessionTable(){
   const whoLabel=w=>w==='u'?'user':w==='a'?'agent':'tool';
   function drill(s){ const co=compFor(s),tot=Object.values(co).reduce((a,b)=>a+b,0);
     const parts=[{v:co.cache_read,c:cssVar('--accent'),l:'cache read'},{v:co.output,c:cssVar('--blue'),l:'output'},{v:co.cache_write,c:cssVar('--amber'),l:'cache write'},{v:co.input,c:cssVar('--slate'),l:'input'}];
-    return `<tr class="detail"><td colspan="8"><div class="drill">
+    return `<tr class="detail"><td colspan="7"><div class="drill">
       <div>
         <div class="convo-head"><h4 style="margin:0">Conversation · ${s.id}</h4>
           <div class="convo-tools"><button class="ct-btn" data-act="expand">⊕ expand all</button><button class="ct-btn" data-act="collapse">⊖ collapse all</button></div></div>
@@ -701,24 +722,53 @@ function sessionTable(){
         </div>
       </div></div></td></tr>`;
   }
-  function rows(){ let r=DATA.top_sessions.slice(); if(TBL.flaggedOnly)r=r.filter(x=>x.flagged);
-    r.sort((a,b)=>{let av=a[TBL.sortKey],bv=b[TBL.sortKey];return typeof av==='string'?TBL.sortDir*av.localeCompare(bv):TBL.sortDir*(av-bv);}); return r; }
-  function render(){ const r=rows();
-    body.innerHTML = r.length? r.map(s=>{const open=TBL.open===s.id;
-      return `<tr class="main ${open?'open':''}" data-id="${s.id}" style="${(!open&&rowDim(s.fleet))?'opacity:.4':''}"><td><span class="chev">▶</span></td>
-        <td class="mono dim" style="font-size:12px">${s.started}</td>
-        <td><span class="badge fleet-${s.fleet}">${fleetName(s.fleet)}</span></td>
-        <td><div class="modelcell">${s.flagged?'<span class="flag" title="operator-marked">⚑</span>':''}<span class="mono" style="font-size:12px">${s.model.replace('google/','')}</span></div></td>
-        <td><span class="kind ${s.kind}">${s.kind}</span></td>
-        <td><span class="outcome-chip"><span class="sw" style="background:${oc(s.outcome)}"></span>${s.outcome}</span></td>
-        <td class="r dim">${n0.format(s.tool_calls)}</td>
-        <td class="r cost-cell">${money(s.cost)}</td></tr>${open?drill(s):''}`;}).join('')
-      : `<tr><td colspan="8"><div class="empty" style="padding:26px;text-align:center;color:var(--fg-mute)">No sessions match this filter.</div></td></tr>`;
-    body.querySelectorAll('tr.main').forEach(tr=>tr.addEventListener('click',e=>{ if(e.target.closest('.markbox'))return; const id=tr.dataset.id; TBL.open=TBL.open===id?null:id; render();}));
-    body.querySelectorAll('.stars').forEach(sb=>sb.querySelectorAll('.st').forEach(st=>st.addEventListener('click',()=>{const n=+st.dataset.n; sb.querySelectorAll('.st').forEach(x=>x.classList.toggle('on',+x.dataset.n<=n));})));
-    body.querySelectorAll('.turn-h').forEach(h=>h.addEventListener('click',()=>h.parentElement.classList.toggle('open')));
-    body.querySelectorAll('.convo-tools .ct-btn').forEach(btn=>btn.addEventListener('click',()=>{const d=btn.closest('.drill'),open=btn.dataset.act==='expand';d.querySelectorAll('.turn').forEach(t=>t.classList.toggle('open',open));}));
-    body.querySelectorAll('.markbox').forEach(mb=>{
+  const norm=q=>q.toLowerCase();
+  function filtered(){
+    const q=norm(SS.search);
+    return ALL.filter(s=>
+      (!SS.flaggedOnly||s.flagged) &&
+      (!SS.model||s.model===SS.model) &&
+      (!SS.outcome||s.outcome===SS.outcome) &&
+      (!q || (s.id+' '+s.model).toLowerCase().includes(q)));
+  }
+  function groups(){
+    const by={};
+    filtered().forEach(s=>{(by[s.started]=by[s.started]||[]).push(s);});
+    return Object.keys(by).sort().reverse().map(day=>{
+      const ss=by[day].slice().sort((a,b)=>b.cost-a.cost);
+      return {day, ss, cost:ss.reduce((a,s)=>a+s.cost,0),
+              mu:ss.filter(s=>s.fleet==='mu').length, cc:ss.filter(s=>s.fleet==='cc').length};
+    });
+  }
+  function row(s){const open=SS.open===s.id;
+    return `<tr class="main ${open?'open':''}" data-id="${s.id}" style="${(!open&&rowDim(s.fleet))?'opacity:.4':''}"><td style="width:22px"><span class="chev">▶</span></td>
+      <td><span class="badge fleet-${s.fleet}">${fleetName(s.fleet)}</span></td>
+      <td><div class="modelcell">${s.flagged?'<span class="flag" title="operator-marked">⚑</span>':''}<span class="mono" style="font-size:12px">${s.model.replace('google/','')}</span></div></td>
+      <td><span class="kind ${s.kind}">${s.kind}</span></td>
+      <td><span class="outcome-chip"><span class="sw" style="background:${oc(s.outcome)}"></span>${s.outcome}</span></td>
+      <td class="r dim">${n0.format(s.tool_calls)}</td>
+      <td class="r cost-cell">${money(s.cost)}</td></tr>${open?drill(s):''}`;}
+  function refreshExportCount(){ const ex=document.getElementById('export-marks'); if(!ex)return;
+    const n=JSON.parse(localStorage.getItem('mu-marks')||'[]').length; ex.textContent='⭳ export marks'+(n?' ('+n+')':''); }
+  function render(){
+    const gs=groups();
+    if(SS.openDays===null) SS.openDays=new Set(gs.length?[gs[0].day]:[]);  // newest day open by default
+    const fltActive=SS.flaggedOnly||SS.model||SS.outcome||SS.search;
+    document.getElementById('sess-count').textContent=
+      `${n0.format(gs.reduce((a,g)=>a+g.ss.length,0))} sessions · ${gs.length} day${gs.length===1?'':'s'}`+(fltActive?' (filtered)':'');
+    host.innerHTML = gs.length ? gs.map(g=>{
+      const open=SS.openDays.has(g.day);
+      return `<div class="day-grp ${open?'open':''}">
+        <div class="day-hdr" data-day="${g.day}"><span class="chev">▶</span><span class="d">${g.day}</span><span class="dm">${g.ss.length} session${g.ss.length===1?'':'s'} · ${money(g.cost,g.cost>=100?0:2)}</span><span class="df">${g.mu?`<span class="mu">${g.mu} mu</span>`:''}${g.cc?`<span class="cc">${g.cc} cc</span>`:''}</span></div>
+        <div class="day-body">${open?`<table class="sess"><tbody>${g.ss.map(row).join('')}</tbody></table>`:''}</div>
+      </div>`;}).join('')
+      : `<div class="empty" style="padding:26px;text-align:center;color:var(--fg-mute)">No sessions match this filter.</div>`;
+    host.querySelectorAll('.day-hdr').forEach(h=>h.addEventListener('click',()=>{const d=h.dataset.day; SS.openDays.has(d)?SS.openDays.delete(d):SS.openDays.add(d); render();}));
+    host.querySelectorAll('tr.main').forEach(tr=>tr.addEventListener('click',e=>{ if(e.target.closest('.markbox'))return; const id=tr.dataset.id; SS.open=SS.open===id?null:id; render();}));
+    host.querySelectorAll('.stars').forEach(sb=>sb.querySelectorAll('.st').forEach(st=>st.addEventListener('click',()=>{const n=+st.dataset.n; sb.querySelectorAll('.st').forEach(x=>x.classList.toggle('on',+x.dataset.n<=n));})));
+    host.querySelectorAll('.turn-h').forEach(h=>h.addEventListener('click',()=>h.parentElement.classList.toggle('open')));
+    host.querySelectorAll('.convo-tools .ct-btn').forEach(btn=>btn.addEventListener('click',()=>{const d=btn.closest('.drill'),op=btn.dataset.act==='expand';d.querySelectorAll('.turn').forEach(t=>t.classList.toggle('open',op));}));
+    host.querySelectorAll('.markbox').forEach(mb=>{
       const sb=mb.querySelector('.stars'); if(!sb)return;
       mb.querySelector('.save').addEventListener('click',()=>{
         const btn=mb.querySelector('.save'), rating=mb.querySelectorAll('.stars .st.on').length;
@@ -729,12 +779,12 @@ function sessionTable(){
         btn.textContent='✓ saved'; refreshExportCount();
       });
     });
-    document.querySelectorAll('#sess thead th[data-sort]').forEach(th=>{const on=th.dataset.sort===TBL.sortKey;th.classList.toggle('act',on);th.querySelector('.ar').textContent=on?(TBL.sortDir<0?'▼':'▲'):'▲▼';});
   }
-  function refreshExportCount(){ const ex=document.getElementById('export-marks'); if(!ex)return;
-    const n=JSON.parse(localStorage.getItem('mu-marks')||'[]').length; ex.textContent='⭳ export marks'+(n?' ('+n+')':''); }
-  document.querySelectorAll('#sess thead th[data-sort]').forEach(th=>th.addEventListener('click',()=>{const k=th.dataset.sort;if(TBL.sortKey===k)TBL.sortDir*=-1;else{TBL.sortKey=k;TBL.sortDir=(k==='started'||k==='fleet'||k==='model'||k==='kind'||k==='outcome')?1:-1;}TBL.open=null;render();}));
-  const tg=document.getElementById('tg-flag'); tg.addEventListener('click',()=>{TBL.flaggedOnly=!TBL.flaggedOnly;tg.classList.toggle('on',TBL.flaggedOnly);TBL.open=null;render();});
+  document.getElementById('sess-search').addEventListener('input',e=>{SS.search=e.target.value; SS.open=null; render();});
+  document.getElementById('sess-model').addEventListener('change',e=>{SS.model=e.target.value; SS.open=null; render();});
+  document.getElementById('sess-outcome').addEventListener('change',e=>{SS.outcome=e.target.value; SS.open=null; render();});
+  const tg=document.getElementById('tg-flag'); tg.addEventListener('click',()=>{SS.flaggedOnly=!SS.flaggedOnly; tg.classList.toggle('on',SS.flaggedOnly); SS.open=null; render();});
+  const exp=document.getElementById('sess-expand'); exp.addEventListener('click',()=>{const gs=groups(); const allOpen=SS.openDays&&SS.openDays.size>=gs.length&&gs.length>0; SS.openDays=new Set(allOpen?[]:gs.map(g=>g.day)); exp.textContent=allOpen?'⊕ expand all':'⊖ collapse all'; render();});
   const ex=document.getElementById('export-marks');
   if(ex) ex.addEventListener('click',()=>{
     const marks=JSON.parse(localStorage.getItem('mu-marks')||'[]');

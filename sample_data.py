@@ -136,6 +136,7 @@ def _build_sink():
                 "cache_write": 0,
             },
             "top_sessions": [],
+            "all_sessions": [],
             "hallucination_by_model": [],
             "trend_by_day": [],
         }
@@ -198,6 +199,24 @@ def _build_sink():
         for r in top
     ]
 
+    # every session, newest first — the Sessions page groups these by day.
+    all_sessions = [
+        {
+            "id": _short_id(r["fleet"], r.get("task_id")),
+            "fleet": r["fleet"],
+            "model": r["model"],
+            "kind": r["kind"],
+            "cost": round(r["cost"], 4),
+            "outcome": r["outcome_class"] or "unclassified",
+            "tool_calls": r["tools"],
+            "started": _day(r["started_at_unix_ms"] or r["ended_at_unix_ms"]),
+            "flagged": False,
+        }
+        for r in sorted(
+            rows, key=lambda r: -(r["started_at_unix_ms"] or r["ended_at_unix_ms"] or 0)
+        )
+    ]
+
     dcost, dden, dnum = defaultdict(float), defaultdict(int), defaultdict(int)
     for r in rows:
         d = _day(r["started_at_unix_ms"] or r["ended_at_unix_ms"])
@@ -228,6 +247,7 @@ def _build_sink():
         "outcomes": outcomes,
         "cost_composition_top_session": comp,
         "top_sessions": top_sessions,
+        "all_sessions": all_sessions,
         "hallucination_by_model": hallu,
         "trend_by_day": trend,
     }

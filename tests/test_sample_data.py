@@ -18,6 +18,7 @@ _CONTRACT_KEYS = {
     "outcomes",
     "cost_composition_top_session",
     "top_sessions",
+    "all_sessions",
     "hallucination_by_model",
     "trend_by_day",
     "marks",

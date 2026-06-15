@@ -35,6 +35,43 @@ def _trend():
     return out
 
 
+def _demo_sessions():
+    """~30 fabricated sessions spread over several days, for the Sessions page breakout."""
+    models = [
+        ("mu", "claude-opus-4-8", "subscription"),
+        ("cc", "claude-opus-4-8", "subscription"),
+        ("cc", "claude-sonnet-4-6", "subscription"),
+        ("mu", "gpt-5.4", "subscription"),
+        ("mu", "openrouter/deepseek-v3", "billed"),
+        ("cc", "claude-haiku-4-5", "subscription"),
+    ]
+    outs = [
+        "clean_success",
+        "narrative_no_action",
+        "bug_in_output",
+        "hollow_commit",
+        "clean_success",
+    ]
+    base = datetime.date(2026, 6, 14)
+    out = []
+    for i in range(30):
+        f, m, k = models[i % len(models)]
+        out.append(
+            {
+                "id": f"{f}·{i:03d}",
+                "fleet": f,
+                "model": m,
+                "kind": k,
+                "cost": round(0.3 + (i % 9) * 1.7, 2),
+                "outcome": outs[i % len(outs)],
+                "tool_calls": 8 + (i * 7) % 120,
+                "started": (base - datetime.timedelta(days=i // 6)).isoformat(),
+                "flagged": i % 7 == 0,
+            }
+        )
+    return out
+
+
 def build():
     return {
         "as_of": "2026-06-12T09:14:00",
@@ -162,6 +199,7 @@ def build():
                 "flagged": False,
             },
         ],
+        "all_sessions": _demo_sessions(),
         "hallucination_by_model": [
             {"fleet": "cc", "model": "claude-opus-4-8", "rate": 0.061, "sessions": 712},
             {"fleet": "cc", "model": "claude-sonnet-4-6", "rate": 0.142, "sessions": 360},
