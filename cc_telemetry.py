@@ -278,14 +278,20 @@ def convert_session(path: str):
     for usage, _mdl in assistants.values():
         if not isinstance(usage, dict):
             continue
-        pt += int(usage.get("input_tokens") or 0)
-        ct += int(usage.get("output_tokens") or 0)
-        cr += int(usage.get("cache_read_input_tokens") or 0)
-        cw += int(usage.get("cache_creation_input_tokens") or 0)
-        cc = usage.get("cache_creation") or {}
+        v = usage.get("input_tokens")
+        pt += v if isinstance(v, int) else 0
+        v = usage.get("output_tokens")
+        ct += v if isinstance(v, int) else 0
+        v = usage.get("cache_read_input_tokens")
+        cr += v if isinstance(v, int) else 0
+        v = usage.get("cache_creation_input_tokens")
+        cw += v if isinstance(v, int) else 0
+        cc = usage.get("cache_creation")
         if isinstance(cc, dict):
-            cw5 += int(cc.get("ephemeral_5m_input_tokens") or 0)
-            cw1 += int(cc.get("ephemeral_1h_input_tokens") or 0)
+            v = cc.get("ephemeral_5m_input_tokens")
+            cw5 += v if isinstance(v, int) else 0
+            v = cc.get("ephemeral_1h_input_tokens")
+            cw1 += v if isinstance(v, int) else 0
 
     sid = os.path.basename(path)
     if sid.endswith(".jsonl"):
