@@ -136,7 +136,7 @@ def _stringify_result(content) -> str:
     return json.dumps(content, separators=(",", ":"))
 
 
-def _normalize_assistant(m: dict) -> dict:
+def _normalize_assistant(m: dict) -> dict[str, object]:
     """Turn one cc assistant message into the pieces of an AssistantMessageEvent.
 
     Returns {model, stop_reason, usage, blocks, tool_uses, raw_usage}. `blocks`
@@ -333,42 +333,50 @@ def convert_session(path: str):
                 rec["ts"],
             )
         elif rec["type"] == "assistant":
-            message = {"content": rec["blocks"], "stop_reason": rec["stop_reason"]}
-            if _has_tokens(rec["usage"]):
-                message["usage"] = rec["usage"]
+            blocks = rec.get("blocks") or []
+            stop_reason = rec.get("stop_reason")
+            usage = rec.get("usage")
+            tool_uses = rec.get("tool_uses") or []
+            ts = rec.get("ts")
+            message = {"content": blocks, "stop_reason": stop_reason}
+            if isinstance(usage, dict) and _has_tokens(usage):
+                message["usage"] = usage
             emit(
                 {"kind": "agent"},
                 {"kind": "assistant_message_event", "message": message},
-                rec["ts"],
+                ts,
             )
             asst_turns_in_ask += 1
             # Standalone ToolCall events: the projector's tool_call_count reads
             # these (and tool analytics). Now with REAL call_id + arguments.
-            for tu in rec["tool_uses"]:
-                cid = tu["id"] or f"c{counter[0] + 1}"
-                call_name[cid] = tu["name"]
-                emit(
-                    {"kind": "agent"},
-                    {
-                        "kind": "tool_call",
-                        "call_id": cid,
-                        "name": tu["name"],
-                        "arguments": tu["input"],
-                    },
-                    rec["ts"],
-                )
+            if isinstance(tool_uses, list):
+                for tu in tool_uses:
+                    if not isinstance(tu, dict):
+                        continue
+                    cid = tu.get("id") or f"c{counter[0] + 1}"
+                    call_name[cid] = tu.get("name", "unknown")
+                    emit(
+                        {"kind": "agent"},
+                        {
+                            "kind": "tool_call",
+                            "call_id": cid,
+                            "name": tu.get("name", "unknown"),
+                            "arguments": tu.get("input", {}),
+                        },
+                        ts,
+                    )
             # Done on a terminal turn (one per ask round-trip; tool_use turns continue).
-            if rec["stop_reason"] in ("end_turn", "max_tokens"):
+            if stop_reason in ("end_turn", "max_tokens"):
                 done = {
                     "kind": "done",
-                    "stop_reason": rec["stop_reason"],
+                    "stop_reason": stop_reason,
                     "turn_count": asst_turns_in_ask,
                 }
-                if _has_tokens(rec["usage"]):
-                    done["usage"] = rec["usage"]
-                if rec["ts"] and ask_start_ts:
-                    done["elapsed_ms"] = max(0, rec["ts"] - ask_start_ts)
-                emit({"kind": "agent"}, done, rec["ts"])
+                if isinstance(usage, dict) and _has_tokens(usage):
+                    done["usage"] = usage
+                if ts and ask_start_ts:
+                    done["elapsed_ms"] = max(0, ts - ask_start_ts)
+                emit({"kind": "agent"}, done, ts)
 
     # Session-summed TaskTelemetry (UNCHANGED fields — sink contract / cost parity).
     tt = {
