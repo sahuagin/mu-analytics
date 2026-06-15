@@ -15,6 +15,8 @@ import os
 import sqlite3
 import tomllib
 import json
+import sys
+import hashlib
 import datetime
 from collections import defaultdict
 
@@ -62,7 +64,7 @@ def _load(label, db):
         con = sqlite3.connect(db)
         con.row_factory = sqlite3.Row
         rows = [dict(r) for r in con.execute(
-            "SELECT provider, model, exit_reason, outcome_class, "
+            "SELECT task_id, session_id, provider, model, exit_reason, outcome_class, "
             "COALESCE(tool_call_count,0) tools, COALESCE(prompt_tokens,0) inp, "
             "COALESCE(completion_tokens,0) out, COALESCE(cache_read_tokens,0) cr, "
             "COALESCE(cache_write_tokens,0) cw, started_at_unix_ms, ended_at_unix_ms FROM tasks")]
@@ -82,7 +84,13 @@ def _load(label, db):
     return rows
 
 
-def build():
+def _short_id(fleet, task_id):
+    """Stable display+drill key, e.g. mu·a1f3."""
+    h = hashlib.blake2s((task_id or "").encode(), digest_size=2).hexdigest()
+    return f"{fleet}·{h}"
+
+
+def _build_sink():
     rows = _load("mu", PATHS["mu_sink_db"]) + _load("cc", PATHS["cc_sink_db"])
     now = datetime.datetime.now().isoformat(timespec="seconds")
     if not rows:
@@ -125,7 +133,8 @@ def build():
             "output": round(t["out"] * trr["output"] / 1e6, 2),
             "cache_read": round(t["cr"] * trr["input"] * MULT["read"] / 1e6, 2),
             "cache_write": round(t["cw"] * trr["input"] * MULT["write_5m"] / 1e6, 2)}
-    top_sessions = [{"fleet": r["fleet"], "model": r["model"], "kind": r["kind"], "cost": round(r["cost"], 4),
+    top_sessions = [{"id": _short_id(r["fleet"], r.get("task_id")),
+                     "fleet": r["fleet"], "model": r["model"], "kind": r["kind"], "cost": round(r["cost"], 4),
                      "outcome": r["outcome_class"] or "unclassified", "tool_calls": r["tools"],
                      "started": _day(r["started_at_unix_ms"]), "flagged": False}
                     for r in top]
@@ -156,6 +165,71 @@ def build():
         "hallucination_by_model": hallu,
         "trend_by_day": trend,
     }
+
+
+def _event_slices():
+    """Event-log-derived slices via DuckDB. Returns (slices, present). Degrades
+    gracefully to ({}, False) if duckdb/the event dir is missing — the page then
+    renders sink-only and its banners explain the gap."""
+    try:
+        import engine
+        import panels
+        import marks_store
+        if not engine.events_present():
+            return {}, False
+        con = engine.connect()
+        traj, drops, _ = panels.context_trajectory(con)
+        return {
+            "marks": marks_store.read_marks(con),
+            "flagged_queue": panels.flagged_queue(con),
+            "compaction": panels.compaction(con),
+            "context_trajectory": traj,
+            "context_compactions": drops,
+            "tool_mix": panels.tool_mix(con),
+            "recall": panels.recall(con),
+            "cache_econ": panels.cache_econ(con),
+            "per_ask": panels.per_ask(con)["asks"],
+            "stop_reason_health": panels.stop_reason_health(con),
+        }, True
+    except Exception as e:  # never let the event layer break the cost dashboard
+        print(f"  warn: event-log slices unavailable ({e}); rendering sink-only",
+              file=sys.stderr)
+        return {}, False
+
+
+def build():
+    """Assemble the full dashboard contract: sink-derived cost/overview slices +
+    event-log-derived rich slices + operator marks + meta flags."""
+    result = _build_sink()
+    slices, present = _event_slices()
+    result.update(slices)
+    # defaults so the page renders (with banners) even when the event layer is absent
+    _zero_comp = {"kept": 0, "dropped": 0, "summarized": 0, "failed": 0,
+                  "before": 0, "after": 0, "events": 0}
+    for k, default in (("marks", []), ("flagged_queue", []), ("context_trajectory", []),
+                       ("context_compactions", []), ("tool_mix", []), ("recall", []),
+                       ("per_ask", []), ("stop_reason_health", []),
+                       ("compaction", {"mu": dict(_zero_comp), "cc": dict(_zero_comp)}),
+                       ("cache_econ", {"median_gap_min": 0, "p90_gap_min": 0, "save_pct": 0,
+                                       "save_pct_p90": 0, "w5_tokens": 0, "w1_tokens": 0,
+                                       "read_tokens": 0})):
+        result.setdefault(k, default)
+    result["meta"] = {
+        "enrichment_status": "pending_commit_enricher",
+        "duckdb": present,
+        "event_dir_present": present,
+        "marks_n": len(slices.get("marks", [])),
+        "flags": {
+            "overview": {"thin": False},
+            "cost": {"thin": False, "cache_tier_sparse": True},
+            "sessions": {"thin": False},
+            "behavioral": {"thin": True, "cc_behavioral_empty": True,
+                           "reason": "cc bridge emits no stop_reason/tool_result yet"},
+            "internalops": {"fleetScope": "mu", "thin": True,
+                            "compaction_actions_partial": True},
+        },
+    }
+    return result
 
 
 if __name__ == "__main__":
