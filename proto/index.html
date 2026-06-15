@@ -221,6 +221,7 @@
   .cost-cell{font-weight:600;letter-spacing:-0.01em}
   .modelcell{display:flex;align-items:center;gap:9px}
   .flag{color:var(--amber);font-size:12px;flex:0 0 auto}
+  .subtag{font-size:9px;letter-spacing:.06em;text-transform:uppercase;font-weight:700;padding:2px 5px;border-radius:4px;background:var(--panel-3);color:var(--fg-mute);flex:0 0 auto}
   .badge{display:inline-flex;align-items:center;gap:6px;font-size:11px;padding:3px 8px;border-radius:6px;font-weight:500;font-family:var(--mono);white-space:nowrap}
   .badge.fleet-cc{background:rgba(214,161,78,0.1);color:var(--amber)}
   .badge.fleet-mu{background:var(--accent-soft);color:var(--accent)}
@@ -416,6 +417,7 @@ function renderOverview(v){
   const degPct=(DATA.degradation_rate!=null)?DATA.degradation_rate:0;
   const ccTot=(DATA.cost_by_fleet.find(f=>f.label==='cc')||{}).sessions||0;
   const muTot=(DATA.cost_by_fleet.find(f=>f.label==='mu')||{}).sessions||0;
+  const nDays=(DATA.trend_by_day||[]).length, nHarness=(DATA.cost_by_fleet||[]).length;
   const byKind=Object.fromEntries(DATA.cost_by_kind.map(x=>[x.label,x.sessions]));
   v.innerHTML = pageHead('Overview','Cost, outcomes and degradation across both harnesses — the all-metrics landing.','both')+`
     <div class="recon">
@@ -429,7 +431,7 @@ function renderOverview(v){
         <div class="big"><span class="cur">$</span>${money(k.billed).replace('$','')}</div><div class="meta"><span class="b">${n0.format(byKind.billed||0)}</span> sessions · money actually charged</div><div class="bar"><i style="width:${(k.billed/DATA.kpi.total_api_rate_equiv*100).toFixed(2)}%"></i></div></div>
       <div class="kpi subs"><div class="top"><div class="name"><span class="dot ring"></span>Subscription</div><div class="tag">notional</div></div>
         <div class="big">≈ <span class="cur">$</span>${money(k.subscription).replace('$','')}</div><div class="meta"><span class="b">${n0.format(byKind.subscription||0)}</span> sessions · API-rate equiv, $0 charged</div><div class="bar"><i style="width:${(k.subscription/DATA.kpi.total_api_rate_equiv*100).toFixed(2)}%"></i></div></div>
-      <div class="kpi"><div class="top"><div class="name">Sessions</div><div class="tag">51 days</div></div><div class="big">${n0.format(totS)}</div><div class="meta"><span class="b">${n0.format(ccTot)}</span> cc · <span class="b">${n0.format(muTot)}</span> mu</div><div class="bar"><i style="width:100%;background:var(--panel-3)"></i></div></div>
+      <div class="kpi"><div class="top"><div class="name">Sessions</div><div class="tag">${nDays} days</div></div><div class="big">${n0.format(totS)}</div><div class="meta"><span class="b">${n0.format(ccTot)}</span> cc · <span class="b">${n0.format(muTot)}</span> mu</div><div class="bar"><i style="width:100%;background:var(--panel-3)"></i></div></div>
       <div class="kpi warn"><div class="top"><div class="name">Degradation</div><div class="tag">mu · stop_reasons</div></div><div class="big">${degPct.toFixed(1)}<span class="cur">%</span></div><div class="meta">non-clean finishes — degraded / abort / error / truncated</div><div class="bar"><i style="width:${Math.min(100,degPct).toFixed(1)}%"></i></div></div>
     </div>
     <div class="grid">
@@ -438,7 +440,7 @@ function renderOverview(v){
       <div class="panel col-3"><div class="ph"><div><div class="ttl">Session outcomes</div><div class="desc">forensic classification</div></div></div><div class="obars" id="o-out" style="margin-top:8px"></div></div>
       <div class="panel col-12"><div class="ph"><div><div class="ttl">Cost &amp; degradation over time</div><div class="desc">daily rate-equiv spend (area) vs output-degradation rate (line), with your session ratings as points</div></div><div class="hint">$/day · degradation %</div></div><div class="chart" id="o-trend" style="height:270px"></div></div>
     </div>
-    <div class="foot"><div>mu observability · <span class="mono">overview</span></div><div class="mono">${n0.format(totS)} sessions · 2 harnesses · ${DATA.cost_by_model.length} models</div></div>`;
+    <div class="foot"><div>mu observability · <span class="mono">overview</span></div><div class="mono">${n0.format(totS)} sessions · ${nHarness} harness${nHarness===1?'':'es'} · ${DATA.cost_by_model.length} models</div></div>`;
 
   // charts
   barH('o-fleet', DATA.cost_by_fleet.map(r=>({label:fleetName(r.label),val:r.cost,color:FLEET_COLOR[r.label],sub:r.sessions+' sess',dim:emph(r.label)})), 36);
@@ -743,7 +745,7 @@ function sessionTable(){
   function row(s){const open=SS.open===s.id;
     return `<tr class="main ${open?'open':''}" data-id="${s.id}" style="${(!open&&rowDim(s.fleet))?'opacity:.4':''}"><td style="width:22px"><span class="chev">▶</span></td>
       <td><span class="badge fleet-${s.fleet}">${fleetName(s.fleet)}</span></td>
-      <td><div class="modelcell">${s.flagged?'<span class="flag" title="operator-marked">⚑</span>':''}<span class="mono" style="font-size:12px">${s.model.replace('google/','')}</span></div></td>
+      <td><div class="modelcell">${s.flagged?'<span class="flag" title="operator-marked">⚑</span>':''}<span class="mono" style="font-size:12px">${s.model.replace('google/','')}</span>${s.child?'<span class="subtag" title="sub-agent / branched session">sub</span>':''}</div></td>
       <td><span class="kind ${s.kind}">${s.kind}</span></td>
       <td><span class="outcome-chip"><span class="sw" style="background:${oc(s.outcome)}"></span>${s.outcome}</span></td>
       <td class="r dim">${n0.format(s.tool_calls)}</td>

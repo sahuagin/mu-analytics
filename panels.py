@@ -89,6 +89,72 @@ def compaction(con):
     return {"mu": mu, "cc": cc}
 
 
+def mu_sessions(con):
+    """The real mu session unit — one row per (daemon, session_id), NOT per task.
+
+    The sink carries one row per *task* and its `session_id` column is a useless
+    per-daemon counter ("session-1/2/3"), so grouping the sink alone can't recover
+    sessions. Session identity lives only in the event log: the dir layout
+    `events/<daemon>/<session_id>.jsonl`. Each `task_telemetry` event sits in its
+    session's file AND carries the sink `task_id`, so it bridges the two stores.
+
+    Returns one dict per session that ran >=1 task::
+
+        {daemon, sid, started_ms, model, task_ids:[...], tool_calls, is_child}
+
+    `is_child` marks sub-agent / branched sessions (a `session_created` with a
+    parent_session_id or branched_at_parent_event_id) — kept flat, just tagged.
+    sample_data joins sink cost onto `task_ids` to build the session's cost/outcome.
+    """
+    rows = con.execute(
+        """
+        WITH tt AS (
+            SELECT daemon, session_id AS sid,
+                   json_extract_string(payload,'$.task_id') AS tid,
+                   json_extract_string(payload,'$.model')   AS model,
+                   ts
+            FROM ev WHERE kind='task_telemetry'
+              AND json_extract_string(payload,'$.task_id') IS NOT NULL
+        ),
+        tools AS (
+            SELECT daemon, session_id AS sid, count(*) AS n
+            FROM ev WHERE kind='tool_call' GROUP BY 1,2
+        ),
+        kids AS (
+            SELECT daemon, session_id AS sid,
+                   max(CASE WHEN json_extract_string(payload,'$.parent_session_id') IS NOT NULL
+                            OR json_extract_string(payload,'$.branched_at_parent_event_id') IS NOT NULL
+                       THEN 1 ELSE 0 END) AS is_child
+            FROM ev WHERE kind='session_created' GROUP BY 1,2
+        )
+        SELECT t.daemon, t.sid,
+               min(t.ts)                       AS started_ms,
+               arg_max(t.model, t.ts)          AS model,
+               list(DISTINCT t.tid)            AS task_ids,
+               COALESCE(any_value(tl.n), 0)    AS tool_calls,
+               COALESCE(any_value(k.is_child), 0) AS is_child
+        FROM tt t
+        LEFT JOIN tools tl ON tl.daemon=t.daemon AND tl.sid=t.sid
+        LEFT JOIN kids  k  ON k.daemon=t.daemon  AND k.sid=t.sid
+        GROUP BY t.daemon, t.sid
+        """
+    ).fetchall()
+    out = []
+    for daemon, sid, started_ms, model, task_ids, tool_calls, is_child in rows:
+        out.append(
+            {
+                "daemon": daemon,
+                "sid": sid,
+                "started_ms": int(started_ms or 0),
+                "model": model,
+                "task_ids": [t for t in task_ids if t],
+                "tool_calls": int(tool_calls),
+                "is_child": bool(is_child),
+            }
+        )
+    return out
+
+
 def _demo_daemon(con):
     """Pick a session with a *real* trajectory: the largest context-token range
     among sessions that have enough assemblies AND at least one compaction (so the

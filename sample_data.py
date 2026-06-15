@@ -107,13 +107,64 @@ def _load(label, db):
 
 
 def _short_id(fleet, task_id):
-    """Stable display+drill key, e.g. mu·a1f3."""
-    h = hashlib.blake2s((task_id or "").encode(), digest_size=2).hexdigest()
+    """Stable display+drill key, e.g. mu·a1f3c2d9.
+
+    digest_size=4 (32-bit) not 2 (16-bit): at 16 bits the 4k+ session keys
+    collided ~122 times, so two distinct sessions shared one drill/mark key.
+    32 bits makes a collision over this corpus vanishingly unlikely.
+    """
+    h = hashlib.blake2s((task_id or "").encode(), digest_size=4).hexdigest()
     return f"{fleet}·{h}"
 
 
-def _build_sink():
-    rows = _load("mu", PATHS["mu_sink_db"]) + _load("cc", PATHS["cc_sink_db"])
+def _sessionize_mu(mu_rows, sessions):
+    """Fold per-task mu sink rows into real session rows via the event-log session
+    map (panels.mu_sessions). The sink is task-grained; a "session" on the dashboard
+    must be one (daemon, session_id), so we group the tasks of each session: cost and
+    token components summed (so top-session composition still holds), tool_calls +
+    model + start from the event log, outcome from the session's last task. Any sink
+    task the event log didn't see (≈0 here) survives as its own row so no cost drops."""
+    by_id = {r.get("task_id"): r for r in mu_rows}
+    used = set()
+    out = []
+    for s in sessions:
+        tasks = [by_id[t] for t in s["task_ids"] if t in by_id]
+        if not tasks:
+            continue
+        used.update(t["task_id"] for t in tasks)
+        last = max(tasks, key=lambda r: r.get("started_at_unix_ms") or 0)
+        sess = {
+            "task_id": f"{s['daemon']}/{s['sid']}",  # unique session key for _short_id
+            "fleet": "mu",
+            "model": s["model"] or last["model"],
+            "provider": last.get("provider"),
+            "inp": sum(r["inp"] for r in tasks),
+            "out": sum(r["out"] for r in tasks),
+            "cr": sum(r["cr"] for r in tasks),
+            "cw": sum(r["cw"] for r in tasks),
+            "cost": round(sum(r["cost"] for r in tasks), 4),
+            "outcome_class": last.get("outcome_class"),
+            "tools": s["tool_calls"] or sum(r["tools"] for r in tasks),
+            "started_at_unix_ms": s["started_ms"] or last.get("started_at_unix_ms"),
+            "ended_at_unix_ms": max((r.get("ended_at_unix_ms") or 0) for r in tasks),
+            "is_child": s["is_child"],
+        }
+        sess["kind"] = cost_kind(sess["provider"], sess["model"])
+        out.append(sess)
+    for r in mu_rows:
+        if r.get("task_id") not in used:
+            r = dict(r)
+            r["is_child"] = False
+            out.append(r)
+    return out
+
+
+def _build_sink(mu_session_map=None):
+    mu_rows = _load("mu", PATHS["mu_sink_db"])
+    if mu_session_map:
+        mu_rows = _sessionize_mu(mu_rows, mu_session_map)
+    # cc's sink is already session-grained (one row per transcript) — pass through.
+    rows = mu_rows + _load("cc", PATHS["cc_sink_db"])
     now = datetime.datetime.now().isoformat(timespec="seconds")
     if not rows:
         return {
@@ -195,6 +246,7 @@ def _build_sink():
             "tool_calls": r["tools"],
             "started": _day(r["started_at_unix_ms"]),
             "flagged": False,
+            "child": bool(r.get("is_child")),
         }
         for r in top
     ]
@@ -211,6 +263,7 @@ def _build_sink():
             "tool_calls": r["tools"],
             "started": _day(r["started_at_unix_ms"] or r["ended_at_unix_ms"]),
             "flagged": False,
+            "child": bool(r.get("is_child")),
         }
         for r in sorted(
             rows, key=lambda r: -(r["started_at_unix_ms"] or r["ended_at_unix_ms"] or 0)
@@ -253,18 +306,30 @@ def _build_sink():
     }
 
 
-def _event_slices():
-    """Event-log-derived slices via DuckDB. Returns (slices, present). Degrades
-    gracefully to ({}, False) if duckdb/the event dir is missing — the page then
-    renders sink-only and its banners explain the gap."""
+def _event_con():
+    """Open the DuckDB event-log connection, or None if duckdb/the event dir is
+    missing (the dashboard then renders sink-only with explanatory banners)."""
     try:
         import engine
+
+        if not engine.events_present():
+            return None
+        return engine.connect()
+    except Exception as e:
+        print(f"  warn: event log unavailable ({e}); rendering sink-only", file=sys.stderr)
+        return None
+
+
+def _event_slices(con):
+    """Event-log-derived slices via DuckDB. Returns (slices, present). Degrades
+    gracefully to ({}, False) if the connection is absent — the page then renders
+    sink-only and its banners explain the gap."""
+    if con is None:
+        return {}, False
+    try:
         import marks_store
         import panels
 
-        if not engine.events_present():
-            return {}, False
-        con = engine.connect()
         traj, drops, _ = panels.context_trajectory(con)
         return {
             "marks": marks_store.read_marks(con),
@@ -288,8 +353,22 @@ def _event_slices():
 def build():
     """Assemble the full dashboard contract: sink-derived cost/overview slices +
     event-log-derived rich slices + operator marks + meta flags."""
-    result = _build_sink()
-    slices, present = _event_slices()
+    con = _event_con()
+    # The event log is the ONLY place mu's real session identity lives, so we fetch
+    # the session map first and fold the sink's per-task rows into real sessions.
+    mu_session_map = None
+    if con is not None:
+        try:
+            import panels
+
+            mu_session_map = panels.mu_sessions(con)
+        except Exception as e:
+            print(
+                f"  warn: mu session map unavailable ({e}); sessions stay task-grained",
+                file=sys.stderr,
+            )
+    result = _build_sink(mu_session_map)
+    slices, present = _event_slices(con)
     # the event log carries the REAL degradation signal; overlay it onto the trend
     # (replacing the sink's narrative_no_action artifact) and surface the headline rate
     deg_day = slices.pop("degradation_by_day", {})
@@ -341,7 +420,12 @@ def build():
         "flags": {
             "overview": {"thin": False},
             "cost": {"thin": False, "cache_tier_sparse": True},
-            "sessions": {"thin": False},
+            "sessions": {
+                "thin": False,
+                # mu rows are grouped into real (daemon, session_id) sessions when the
+                # event log is present; without it they fall back to task-grained rows.
+                "grain": "session" if mu_session_map else "task",
+            },
             "behavioral": {
                 "thin": True,
                 "cc_behavioral_empty": True,
