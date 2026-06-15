@@ -9,6 +9,7 @@ the README screenshot.
 
 Keep it in sync with sample_data's schema if the contract changes.
 """
+
 import datetime
 import json
 import math
@@ -22,11 +23,15 @@ def _trend():
         d = start + datetime.timedelta(days=i)
         cost = 120 + 90 * math.sin(i / 4.2) + 70 * math.sin(i / 11.0) + 1.6 * i
         deg = 0.04 + 0.03 * math.sin(i / 3.0)
-        if 24 <= i <= 34:                      # a transient "bad stretch"
+        if 24 <= i <= 34:  # a transient "bad stretch"
             deg += 0.10 * math.sin((i - 24) / 10.0 * math.pi)
-        out.append({"date": d.isoformat(),
-                    "cost": round(max(35.0, cost), 2),
-                    "degradation": round(max(0.0, deg), 3)})
+        out.append(
+            {
+                "date": d.isoformat(),
+                "cost": round(max(35.0, cost), 2),
+                "degradation": round(max(0.0, deg), 3),
+            }
+        )
     return out
 
 
@@ -68,27 +73,94 @@ def build():
         ],
         # cache-read dominates, as it does in reality (~82% here)
         "cost_composition_top_session": {
-            "input": 14.00, "output": 84.00, "cache_read": 612.00, "cache_write": 36.00,
+            "input": 14.00,
+            "output": 84.00,
+            "cache_read": 612.00,
+            "cache_write": 36.00,
         },
         "top_sessions": [
             # row 0 cost == sum(cost_composition_top_session) == 746.00 so the
             # exact-composition branch in the template fires on it.
-            {"fleet": "cc", "model": "claude-opus-4-8", "kind": "subscription", "cost": 746.00,
-             "outcome": "clean_success", "tool_calls": 142, "started": "2026-05-28", "flagged": False},
-            {"fleet": "mu", "model": "claude-opus-4-8", "kind": "subscription", "cost": 512.40,
-             "outcome": "bug_in_output", "tool_calls": 98, "started": "2026-06-02", "flagged": False},
-            {"fleet": "cc", "model": "claude-fable-5", "kind": "subscription", "cost": 388.00,
-             "outcome": "clean_success", "tool_calls": 76, "started": "2026-06-05", "flagged": False},
-            {"fleet": "cc", "model": "claude-opus-4-8", "kind": "subscription", "cost": 296.50,
-             "outcome": "narrative_no_action", "tool_calls": 54, "started": "2026-05-30", "flagged": False},
-            {"fleet": "mu", "model": "gpt-5.4", "kind": "subscription", "cost": 210.00,
-             "outcome": "clean_success", "tool_calls": 61, "started": "2026-06-08", "flagged": False},
-            {"fleet": "cc", "model": "claude-sonnet-4-6", "kind": "subscription", "cost": 142.30,
-             "outcome": "hollow_commit", "tool_calls": 33, "started": "2026-06-01", "flagged": False},
-            {"fleet": "mu", "model": "openrouter/deepseek-v3", "kind": "billed", "cost": 96.40,
-             "outcome": "clean_success", "tool_calls": 47, "started": "2026-06-09", "flagged": False},
-            {"fleet": "cc", "model": "claude-haiku-4-5", "kind": "subscription", "cost": 54.20,
-             "outcome": "clean_success", "tool_calls": 28, "started": "2026-06-10", "flagged": False},
+            {
+                "fleet": "cc",
+                "model": "claude-opus-4-8",
+                "kind": "subscription",
+                "cost": 746.00,
+                "outcome": "clean_success",
+                "tool_calls": 142,
+                "started": "2026-05-28",
+                "flagged": False,
+            },
+            {
+                "fleet": "mu",
+                "model": "claude-opus-4-8",
+                "kind": "subscription",
+                "cost": 512.40,
+                "outcome": "bug_in_output",
+                "tool_calls": 98,
+                "started": "2026-06-02",
+                "flagged": False,
+            },
+            {
+                "fleet": "cc",
+                "model": "claude-fable-5",
+                "kind": "subscription",
+                "cost": 388.00,
+                "outcome": "clean_success",
+                "tool_calls": 76,
+                "started": "2026-06-05",
+                "flagged": False,
+            },
+            {
+                "fleet": "cc",
+                "model": "claude-opus-4-8",
+                "kind": "subscription",
+                "cost": 296.50,
+                "outcome": "narrative_no_action",
+                "tool_calls": 54,
+                "started": "2026-05-30",
+                "flagged": False,
+            },
+            {
+                "fleet": "mu",
+                "model": "gpt-5.4",
+                "kind": "subscription",
+                "cost": 210.00,
+                "outcome": "clean_success",
+                "tool_calls": 61,
+                "started": "2026-06-08",
+                "flagged": False,
+            },
+            {
+                "fleet": "cc",
+                "model": "claude-sonnet-4-6",
+                "kind": "subscription",
+                "cost": 142.30,
+                "outcome": "hollow_commit",
+                "tool_calls": 33,
+                "started": "2026-06-01",
+                "flagged": False,
+            },
+            {
+                "fleet": "mu",
+                "model": "openrouter/deepseek-v3",
+                "kind": "billed",
+                "cost": 96.40,
+                "outcome": "clean_success",
+                "tool_calls": 47,
+                "started": "2026-06-09",
+                "flagged": False,
+            },
+            {
+                "fleet": "cc",
+                "model": "claude-haiku-4-5",
+                "kind": "subscription",
+                "cost": 54.20,
+                "outcome": "clean_success",
+                "tool_calls": 28,
+                "started": "2026-06-10",
+                "flagged": False,
+            },
         ],
         "hallucination_by_model": [
             {"fleet": "cc", "model": "claude-opus-4-8", "rate": 0.061, "sessions": 712},
@@ -100,6 +172,146 @@ def build():
             {"fleet": "cc", "model": "claude-fable-5", "rate": 0.042, "sessions": 48},
         ],
         "trend_by_day": _trend(),
+        # ── synthetic per-page slices (so MU_ANALYTICS_DEMO renders the full proto) ──
+        "marks": [
+            {"date": "2026-04-28", "rating": 2, "note": "degraded — looped on a missing flag"},
+            {"date": "2026-05-14", "rating": 1, "note": "gaslit me about a tool"},
+            {"date": "2026-05-29", "rating": 5, "note": "clean cleanroom build"},
+            {"date": "2026-06-04", "rating": 2, "note": "anchored on old code"},
+            {"date": "2026-06-10", "rating": 4, "note": "good recovery"},
+        ],
+        "flagged_queue": [
+            {
+                "id": "mu·44a1",
+                "fleet": "mu",
+                "model": "claude-opus-4-8",
+                "reason": "deg",
+                "why": "stop_reason=degraded_eof mid-task",
+                "conf": "Probable 0.62",
+            },
+            {
+                "id": "mu·1d8e",
+                "fleet": "mu",
+                "model": "gpt-5.5",
+                "reason": "err",
+                "why": "exit_reason=error",
+                "conf": "Probable 0.70",
+            },
+            {
+                "id": "mu·be07",
+                "fleet": "mu",
+                "model": "claude-opus-4-7",
+                "reason": "callout",
+                "why": "self-flag: retry refused for bash",
+                "conf": "Definite 0.88",
+            },
+        ],
+        "compaction": {
+            "mu": {
+                "kept": 61,
+                "dropped": 22,
+                "summarized": 14,
+                "failed": 1,
+                "before": 128400,
+                "after": 41200,
+                "events": 98,
+            },
+            "cc": {
+                "kept": 0,
+                "dropped": 0,
+                "summarized": 0,
+                "failed": 0,
+                "before": 0,
+                "after": 0,
+                "events": 0,
+            },
+        },
+        "context_trajectory": [
+            8,
+            14,
+            22,
+            31,
+            44,
+            58,
+            73,
+            92,
+            118,
+            52,
+            64,
+            79,
+            96,
+            121,
+            148,
+            61,
+            74,
+            93,
+            116,
+            142,
+            171,
+            199,
+            88,
+            101,
+            124,
+            150,
+        ],
+        "context_compactions": [9, 15, 22],
+        "tool_mix": [
+            {"tool": "bash", "count": 1840},
+            {"tool": "read", "count": 1520},
+            {"tool": "edit", "count": 880},
+            {"tool": "grep", "count": 610},
+            {"tool": "write", "count": 420},
+            {"tool": "spawn_worker", "count": 96},
+        ],
+        "recall": [
+            {"source": "ProjectFile", "items": 188, "tokens": 96200},
+            {"source": "Memory", "items": 412, "tokens": 38400},
+            {"source": "Bootloader", "items": 34, "tokens": 12100},
+        ],
+        "cache_econ": {
+            "median_gap_min": 0.2,
+            "p90_gap_min": 6.4,
+            "save_pct": 1.0,
+            "save_pct_p90": 54.0,
+            "w5_tokens": 120000,
+            "w1_tokens": 5800000,
+            "read_tokens": 120000000,
+        },
+        "per_ask": [
+            {
+                "i": i + 1,
+                "cost": round(0.41 if i % 7 == 0 else 0.034 + (i % 5) * 0.004, 3),
+                "rewrite_5m": i % 7 == 0,
+            }
+            for i in range(28)
+        ],
+        "stop_reason_health": [
+            {"stop_reason": "end_turn", "count": 4492},
+            {"stop_reason": "iteration_cap", "count": 66},
+            {"stop_reason": "max_tokens", "count": 50},
+        ],
+        "degradation_rate": 3.5,
+        "meta": {
+            "enrichment_status": "pending_commit_enricher",
+            "duckdb": True,
+            "event_dir_present": True,
+            "marks_n": 5,
+            "flags": {
+                "overview": {"thin": False},
+                "cost": {"thin": False, "cache_tier_sparse": True},
+                "sessions": {"thin": False},
+                "behavioral": {
+                    "thin": True,
+                    "cc_behavioral_empty": True,
+                    "reason": "cc bridge emits no stop_reason/tool_result yet",
+                },
+                "internalops": {
+                    "fleetScope": "mu",
+                    "thin": True,
+                    "compaction_actions_partial": True,
+                },
+            },
+        },
     }
 
 

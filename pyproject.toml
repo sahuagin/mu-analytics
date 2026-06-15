@@ -1,0 +1,44 @@
+[project]
+name = "mu-analytics"
+version = "0.1.0"
+description = "Cross-fleet agent-session analytics (mu + claude-code): a DuckDB-over-event-log engine feeding a navigable dashboard."
+requires-python = ">=3.11"
+# Runtime deps. On the canonical FreeBSD host these come from pkg (the pinned
+# /usr/local/bin/python3.11 already imports duckdb); declared here for portability
+# / CI on other platforms. The sinks use stdlib sqlite3 (DuckDB's sqlite_scanner
+# has no freebsd_amd64 build), so duckdb is the only third-party runtime dep.
+dependencies = ["duckdb>=1.5"]
+
+[project.optional-dependencies]
+# `cost.py` is a standalone polars diagnostic; the dashboard build path does not need it.
+cost = ["polars>=1.0"]
+# Convenience for non-pkg environments. The default `just test` uses stdlib
+# unittest (no install needed); pytest is optional and discovers the same tests.
+dev = ["pytest>=8", "ruff>=0.15", "ty"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+# Generated/vendored/data dirs are not ours to lint or format.
+extend-exclude = ["proto", "dist", "assets", "design", "data", "lib", "__pycache__"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+# E501 (line length) is the formatter's job; don't double-flag long SQL/strings.
+ignore = ["E501"]
+
+[tool.ty.environment]
+python-version = "3.11"
+
+[tool.ty.src]
+include = ["engine.py", "panels.py", "marks_store.py", "sample_data.py",
+           "demo_data.py", "gen_dashboard.py", "cc_telemetry.py", "tests"]
+
+[tool.ty.rules]
+# duckdb / the pyo3 cc parser ship no type stubs; don't fail the build on that.
+unresolved-import = "ignore"
+# Lightly-typed by design (dashboard glue, not a library): don't demand annotations.
+possibly-missing-attribute = "ignore"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
