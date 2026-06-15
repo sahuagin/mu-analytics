@@ -59,7 +59,7 @@ class TestPanels(unittest.TestCase):
             self.assertIn(k, ce)
 
     def test_per_ask(self):
-        pa = panels.per_ask(self.con, daemon="testdaemon01")
+        pa = panels.per_ask(self.con)  # default-daemon path falls back on a small corpus
         self.assertEqual(pa["model"], "claude-opus-4-8")
         self.assertEqual(len(pa["asks"]), 1)
         ask = pa["asks"][0]

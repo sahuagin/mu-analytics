@@ -113,10 +113,11 @@ def _demo_daemon(con):
     ).fetchone()
     if row:
         return row[0]
-    return con.execute(
+    row = con.execute(
         "SELECT daemon FROM ev WHERE kind='context_assembly' "
         "GROUP BY daemon ORDER BY count(*) DESC LIMIT 1"
-    ).fetchone()[0]
+    ).fetchone()
+    return row[0] if row else None
 
 
 def context_trajectory(con, daemon=None, cap=80):
@@ -337,10 +338,16 @@ def cache_econ(con):
 def per_ask(con, daemon=None, limit=28):
     """Per-turn cost within a session; amber = a turn that paid a cache write."""
     if daemon is None:
-        daemon = con.execute(
+        row = con.execute(
             "SELECT daemon FROM ev WHERE kind='assistant_message_event' "
             "GROUP BY daemon HAVING count(*) BETWEEN 12 AND 60 ORDER BY count(*) DESC LIMIT 1"
-        ).fetchone()[0]
+        ).fetchone()
+        if not row:  # small corpus: fall back to the busiest assistant session
+            row = con.execute(
+                "SELECT daemon FROM ev WHERE kind='assistant_message_event' "
+                "GROUP BY daemon ORDER BY count(*) DESC LIMIT 1"
+            ).fetchone()
+        daemon = row[0] if row else None
     model = _daemon_model(con, daemon)
     rr = RATES.get(rate_key(model)) or RATES["claude-opus-4-8"]
     rows = con.execute(

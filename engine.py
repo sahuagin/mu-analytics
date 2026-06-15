@@ -97,8 +97,8 @@ def smoke() -> None:
         print(f"NO EVENTS at {MU_EVENTS}")
         return
     con = connect()
-    total = con.execute("SELECT count(*) FROM ev").fetchone()[0]
-    daemons = con.execute("SELECT count(DISTINCT daemon) FROM ev").fetchone()[0]
+    total = (con.execute("SELECT count(*) FROM ev").fetchone() or (0,))[0]
+    daemons = (con.execute("SELECT count(DISTINCT daemon) FROM ev").fetchone() or (0,))[0]
     print(f"event-log rows: {total:,}   distinct daemons: {daemons:,}")
     print("per-kind histogram:")
     for kind, n in histogram(con):
