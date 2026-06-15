@@ -8,10 +8,12 @@ Cost math reuses sample_data's rate table + formula — never re-derived here.
 `./run panels.py` prints each slice (a verification harness).
 """
 
+import json
 import math
+import os
 
 import engine
-from sample_data import MULT, RATES, rate_key
+from sample_data import MULT, RATES, _short_id, rate_key
 
 # Source labels for recall provenance -> the proto's display strings.
 _SRC_LABEL = {
@@ -478,6 +480,191 @@ def per_ask_sessions(con, n=12, asks_limit=30):
     return out[:n]
 
 
+# --- per-session transcript (the Sessions drill-down) ----------------------------
+# The drill-down is the ONE place a session's whole conversation is reviewed to mark
+# it, so transcripts are FULL — every turn, no clipping. Embedding all of them in the
+# page is impossible (~450 MB; one session is 145 MB of multi-MB tool dumps), so each
+# session is written to its own JSON sidecar (sessions/<slug>.json) and the drill-down
+# fetches it on demand. write_session_transcripts only rewrites sessions whose newest
+# event changed, so the hourly cron doesn't re-serialize the whole corpus every run.
+
+# Conversational event kinds, oldest-first, that reconstruct a readable turn stream.
+_TX_KINDS = ("user_message", "assistant_message_event", "tool_call", "tool_result")
+# cc's sink task_id lives only on its task_telemetry event; bridge session_id -> it.
+_TX_CC_TID = """
+    cc_tid AS (
+        SELECT session_id, any_value(json_extract_string(payload,'$.task_id')) AS tid
+        FROM ev WHERE kind='task_telemetry' AND fleet='cc' GROUP BY session_id
+    )"""
+# The per-session key sample_data hashes into the display id: mu -> "<daemon>/<sid>",
+# cc -> the task_telemetry.task_id ("cc-<uuid>"). Keep these two in lockstep.
+_TX_KEY = "CASE WHEN e.fleet='mu' THEN e.daemon || '/' || e.session_id ELSE c.tid END"
+# One readable body per kind. Assistant content is an array of blocks (keep the text
+# ones) OR a plain string — never fall back to dumping the raw array, or a pure
+# tool-use turn leaks its tool_call JSON as "text". chr(10) = newline join.
+_TX_BODY = """CASE e.kind
+        WHEN 'user_message' THEN json_extract_string(e.payload,'$.content')
+        WHEN 'tool_result'  THEN json_extract_string(e.payload,'$.content')
+        WHEN 'tool_call'    THEN CAST(json_extract(e.payload,'$.arguments') AS VARCHAR)
+        WHEN 'assistant_message_event' THEN
+            CASE WHEN json_type(json_extract(e.payload,'$.message.content')) = 'ARRAY'
+                THEN array_to_string(list_transform(
+                    from_json(json_extract(e.payload,'$.message.content'), '["json"]'),
+                    x -> CASE WHEN json_extract_string(x,'$.type')='text'
+                              THEN json_extract_string(x,'$.text') END), chr(10))
+                ELSE json_extract_string(e.payload,'$.message.content')
+            END
+    END"""
+_CONV_SQL = f"""
+WITH{_TX_CC_TID},
+conv AS (
+    SELECT e.fleet, {_TX_KEY} AS key, e.ts, e.id, e.kind,
+           json_extract_string(e.payload,'$.name')               AS tool_name,
+           CAST(json_extract(e.payload,'$.is_error') AS BOOLEAN) AS is_error,
+           {_TX_BODY} AS body
+    FROM ev e
+    LEFT JOIN cc_tid c ON e.fleet='cc' AND e.session_id = c.session_id
+    WHERE e.kind IN {_TX_KINDS}
+)"""
+# Per-session signature = newest event id (event ids are append-monotonic), so an
+# unchanged session has an unchanged signature and its sidecar can be skipped.
+_SIG_SQL = f"""
+WITH{_TX_CC_TID}
+SELECT e.fleet, {_TX_KEY} AS key, max(e.id) AS max_id
+FROM ev e
+LEFT JOIN cc_tid c ON e.fleet='cc' AND e.session_id = c.session_id
+WHERE e.kind IN {_TX_KINDS}
+GROUP BY 1, 2
+"""
+_ALL_ROWS_SQL = (
+    _CONV_SQL + "\nSELECT fleet, key, kind, tool_name, is_error, body FROM conv "
+    "WHERE key IS NOT NULL ORDER BY fleet, key, ts, id"
+)
+_CHANGED_ROWS_SQL = (
+    _CONV_SQL
+    + """
+SELECT c.fleet, c.key, c.kind, c.tool_name, c.is_error, c.body
+FROM conv c JOIN _changed ch ON ch.fleet = c.fleet AND ch.key = c.key
+WHERE c.key IS NOT NULL
+ORDER BY c.fleet, c.key, c.ts, c.id"""
+)
+
+
+def _tx_preview(text, n=96):
+    """First non-blank line of a turn body, whitespace-collapsed, clipped to n."""
+    for line in (text or "").splitlines():
+        line = " ".join(line.split())
+        if line:
+            return line[:n]
+    return ""
+
+
+def _turn_for_row(kind, tool_name, is_error, body):
+    """One [who, preview, body] turn from an event row, or None to skip. `who` is
+    'u' user / 'a' agent / 't' tool. Empty user/assistant turns are dropped (a pure
+    tool-use assistant message has no text — the following tool_call carries it)."""
+    body = body or ""
+    if kind == "user_message":
+        return ["u", _tx_preview(body), body] if body.strip() else None
+    if kind == "assistant_message_event":
+        return ["a", _tx_preview(body), body] if body.strip() else None
+    if kind == "tool_call":
+        name = tool_name or "tool"
+        return ["t", _tx_preview(f"{name} · {body}" if body else name), body]
+    label = "→ error" if is_error else "→ result"  # tool_result
+    snip = _tx_preview(body, 64)
+    return ["t", f"{label} · {snip}" if snip else label, body or "(empty result)"]
+
+
+def session_transcripts(con):
+    """Every session's FULL conversation, keyed by the natural key sample_data hashes
+    into the display id::  { (fleet, key): [[who, preview, body], ...] }
+
+    - mu key = "<daemon>/<session_id>"    cc key = task_telemetry.task_id ("cc-<uuid>")
+
+    Materializes the whole corpus — fine for tests/small inputs; production writes
+    sidecars via write_session_transcripts to avoid holding ~450 MB at once."""
+    out: dict = {}
+    for fleet, key, kind, tool_name, is_error, body in con.execute(_ALL_ROWS_SQL).fetchall():
+        turn = _turn_for_row(kind, tool_name, is_error, body)
+        if turn is not None:
+            out.setdefault((fleet, key), []).append(turn)
+    return out
+
+
+def _slug(display_id):
+    """Filesystem/URL-safe sidecar stem for a session display id (mu·ab12 -> mu-ab12).
+    The page mirrors this exactly: fetch(`sessions/${id.replaceAll('·','-')}.json`)."""
+    return display_id.replace("·", "-")
+
+
+def write_session_transcripts(con, sessions_dir):
+    """Write one FULL transcript per session to <sessions_dir>/<slug>.json for the
+    drill-down to fetch on demand. Only sessions whose newest event id changed since
+    the last run are rewritten (tracked in <sessions_dir>/_manifest.json), and sidecars
+    for vanished sessions are removed. Streams row batches so peak memory is ~one
+    session, not the whole corpus. Returns {"written": n, "total": n}."""
+    os.makedirs(sessions_dir, exist_ok=True)
+    manifest_path = os.path.join(sessions_dir, "_manifest.json")
+    try:
+        with open(manifest_path, encoding="utf-8") as f:
+            old = json.load(f)
+    except (OSError, ValueError):
+        old = {}
+
+    keymap, current = {}, {}  # slug -> (fleet, key) ; slug -> max_id
+    for fleet, key, max_id in con.execute(_SIG_SQL).fetchall():
+        if not key:
+            continue
+        slug = _slug(_short_id(fleet, key))
+        keymap[slug] = (fleet, key)
+        current[slug] = int(max_id)
+
+    def path_for(slug):
+        return os.path.join(sessions_dir, slug + ".json")
+
+    changed = [
+        slug
+        for slug, mid in current.items()
+        if old.get(slug) != mid or not os.path.exists(path_for(slug))
+    ]
+    for slug in old:  # drop sidecars for sessions that no longer exist
+        if slug not in current:
+            try:
+                os.remove(path_for(slug))
+            except OSError:
+                pass
+
+    if changed:
+        con.execute("CREATE OR REPLACE TEMP TABLE _changed(fleet VARCHAR, key VARCHAR)")
+        con.executemany("INSERT INTO _changed VALUES (?, ?)", [keymap[s] for s in changed])
+
+        def flush(fk, turns):
+            if fk is not None:
+                with open(path_for(_slug(_short_id(*fk))), "w", encoding="utf-8") as f:
+                    json.dump(turns, f, ensure_ascii=False, separators=(",", ":"))
+
+        cur = con.execute(_CHANGED_ROWS_SQL)
+        cur_fk, turns = None, []
+        while True:
+            batch = cur.fetchmany(2000)
+            if not batch:
+                break
+            for fleet, key, kind, tool_name, is_error, body in batch:
+                fk = (fleet, key)
+                if fk != cur_fk:
+                    flush(cur_fk, turns)
+                    cur_fk, turns = fk, []
+                turn = _turn_for_row(kind, tool_name, is_error, body)
+                if turn is not None:
+                    turns.append(turn)
+        flush(cur_fk, turns)
+
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        json.dump(current, f)
+    return {"written": len(changed), "total": len(current)}
+
+
 if __name__ == "__main__":
     import json
 
@@ -499,3 +686,9 @@ if __name__ == "__main__":
     pa = per_ask(con)
     print(f"== per_ask (daemon={pa['daemon']}, model={pa['model']}, {len(pa['asks'])} asks) ==")
     print(json.dumps(pa["asks"][:8], indent=1))
+    tx = session_transcripts(con)
+    nturns = sum(len(t) for t in tx.values())
+    print(f"== session_transcripts ({len(tx)} sessions, {nturns} turns) ==")
+    for k, turns in list(tx.items())[:1]:
+        print(f"  {k}: {len(turns)} turns")
+        print(json.dumps(turns[:6], indent=1))

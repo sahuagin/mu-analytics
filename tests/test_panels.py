@@ -76,5 +76,62 @@ class TestPanels(unittest.TestCase):
         self.assertTrue(all(x["fleet"] == "mu" for x in q))
 
 
+class TestTranscripts(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.con = fixtures.transcript_connection(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_keys_match_session_display_ids(self):
+        tx = panels.session_transcripts(self.con)
+        # mu sessions key on "<daemon>/<session_id>"; cc on the task_telemetry.task_id
+        self.assertIn(("mu", "txdaemon/s1"), tx)
+        self.assertIn(("cc", "cc-txcc-0000-1111"), tx)
+
+    def test_mu_turn_reconstruction_skips_empty_and_pure_tooluse(self):
+        turns = panels.session_transcripts(self.con)[("mu", "txdaemon/s1")]
+        # event 3 (pure tool-use assistant) and event 7 (blank user) are dropped
+        self.assertEqual([t[0] for t in turns], ["u", "a", "t", "t", "t", "u"])
+        # the assistant turn is the real text, NOT a dumped tool_call JSON array
+        a = next(t for t in turns if t[0] == "a")
+        self.assertEqual(a[2], "Looking at it now.")
+        self.assertFalse(a[2].lstrip().startswith("[{"))
+        # tool_result turns carry the error/ok label + a content snippet
+        results = [t for t in turns if t[1].startswith("→")]
+        self.assertTrue(any(t[1].startswith("→ error") and t[2] == "boom" for t in results))
+        self.assertTrue(any(t[1].startswith("→ result") for t in results))
+
+    def test_cc_turn_reconstruction(self):
+        turns = panels.session_transcripts(self.con)[("cc", "cc-txcc-0000-1111")]
+        self.assertEqual([t[0] for t in turns], ["u", "a", "t", "t"])
+        self.assertEqual(next(t for t in turns if t[0] == "a")[2], "on it")
+        self.assertIn("127.0.0.1 localhost", turns[-1][2])
+
+    def test_write_session_transcripts_sidecars(self):
+        import json
+
+        from sample_data import _short_id
+
+        sdir = os.path.join(self.tmp.name, "out", "sessions")
+        stats = panels.write_session_transcripts(self.con, sdir)
+        self.assertEqual(stats["total"], 2)
+        self.assertEqual(stats["written"], 2)
+        # a sidecar per session, named by the display-id slug (· -> -), holding the turns
+        mu_file = os.path.join(sdir, panels._slug(_short_id("mu", "txdaemon/s1")) + ".json")
+        self.assertTrue(os.path.exists(mu_file))
+        turns = json.load(open(mu_file))
+        self.assertEqual([t[0] for t in turns], ["u", "a", "t", "t", "t", "u"])
+        self.assertTrue(os.path.exists(os.path.join(sdir, "_manifest.json")))
+
+    def test_write_session_transcripts_skips_unchanged(self):
+        sdir = os.path.join(self.tmp.name, "out2", "sessions")
+        panels.write_session_transcripts(self.con, sdir)
+        again = panels.write_session_transcripts(self.con, sdir)  # nothing changed
+        self.assertEqual(again["written"], 0)
+        self.assertEqual(again["total"], 2)
+
+
 if __name__ == "__main__":
     unittest.main()
