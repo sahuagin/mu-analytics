@@ -190,6 +190,8 @@ def _event_slices():
             "cache_econ": panels.cache_econ(con),
             "per_ask": panels.per_ask(con)["asks"],
             "stop_reason_health": panels.stop_reason_health(con),
+            "degradation_by_day": panels.degradation_by_day(con),
+            "degradation_rate": panels.degradation_rate(con),
         }, True
     except Exception as e:  # never let the event layer break the cost dashboard
         print(f"  warn: event-log slices unavailable ({e}); rendering sink-only",
@@ -202,7 +204,15 @@ def build():
     event-log-derived rich slices + operator marks + meta flags."""
     result = _build_sink()
     slices, present = _event_slices()
+    # the event log carries the REAL degradation signal; overlay it onto the trend
+    # (replacing the sink's narrative_no_action artifact) and surface the headline rate
+    deg_day = slices.pop("degradation_by_day", {})
+    deg_rate = slices.pop("degradation_rate", None)
     result.update(slices)
+    if deg_day:
+        for d in result.get("trend_by_day", []):
+            d["degradation"] = deg_day.get(d["date"], 0.0)
+    result["degradation_rate"] = deg_rate if deg_rate is not None else 0.0
     # defaults so the page renders (with banners) even when the event layer is absent
     _zero_comp = {"kept": 0, "dropped": 0, "summarized": 0, "failed": 0,
                   "before": 0, "after": 0, "events": 0}

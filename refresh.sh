@@ -21,5 +21,7 @@ echo "[$(date '+%Y-%m-%d %H:%M:%S')] mu-analytics refresh"
 # cc sink: re-emit all cc accounts -> events -> compact
 "$here/run" cc_telemetry.py >/dev/null 2>&1 || echo "  warn: cc emit failed"
 "$mu" analytics compact --events-dir "$cc_events" --db "$cc_sink" >/dev/null 2>&1 || echo "  warn: cc compact failed"
+# fold any dashboard-exported marks (data/marks_inbox/*.jsonl) into marks.sqlite
+"$here/run" marks_store.py ingest >/dev/null 2>&1 || echo "  warn: marks ingest failed"
 # regenerate the dashboard into the served path
 "$here/run" gen_dashboard.py "$out" || echo "  warn: dashboard gen failed"

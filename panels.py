@@ -142,6 +142,10 @@ def context_trajectory(con, daemon=None, cap=80):
     return traj_k, drops, daemon
 
 
+# A clean finish is end_turn / tool_use; everything else is a degraded finish.
+_DEGRADED_STOP = ("degraded_eof", "aborted", "error", "max_tokens", "iteration_cap")
+
+
 def stop_reason_health(con):
     """done.stop_reason distribution -> [{stop_reason, count}]."""
     rows = con.execute(
@@ -152,6 +156,37 @@ def stop_reason_health(con):
         """
     ).fetchall()
     return [{"stop_reason": s, "count": int(c)} for s, c in rows]
+
+
+def degradation_by_day(con):
+    """Real per-day degradation = share of done events with a non-clean stop_reason
+    (degraded_eof/aborted/error/max_tokens/iteration_cap). This is the event-log
+    signal, NOT the sink's narrative_no_action artifact. Returns {date: rate}."""
+    bad = "','".join(_DEGRADED_STOP)
+    rows = con.execute(
+        f"""
+        SELECT strftime(to_timestamp(ts/1000), '%Y-%m-%d') AS day,
+               count(*) FILTER (WHERE sr IN ('{bad}')) AS bad,
+               count(*) AS tot
+        FROM (SELECT ts, json_extract_string(payload,'$.stop_reason') AS sr
+              FROM ev WHERE kind='done' AND json_extract_string(payload,'$.stop_reason') IS NOT NULL)
+        GROUP BY 1
+        """
+    ).fetchall()
+    return {day: round(b / t, 3) if t else 0.0 for day, b, t in rows}
+
+
+def degradation_rate(con):
+    """Overall non-clean-finish rate across all done events (the real headline)."""
+    bad = "','".join(_DEGRADED_STOP)
+    row = con.execute(
+        f"""
+        SELECT count(*) FILTER (WHERE sr IN ('{bad}')) AS bad, count(*) AS tot
+        FROM (SELECT json_extract_string(payload,'$.stop_reason') AS sr
+              FROM ev WHERE kind='done' AND json_extract_string(payload,'$.stop_reason') IS NOT NULL)
+        """
+    ).fetchone()
+    return round(row[0] / row[1] * 100, 1) if row[1] else 0.0
 
 
 def _daemon_model(con, daemon):
@@ -321,15 +356,20 @@ if __name__ == "__main__":
     import json
 
     con = engine.connect()
-    print("== tool_mix ==");           print(json.dumps(tool_mix(con), indent=1))
-    print("== recall ==");             print(json.dumps(recall(con), indent=1))
-    print("== compaction ==");         print(json.dumps(compaction(con), indent=1))
+
+    def show(name, val):
+        print(f"== {name} ==")
+        print(json.dumps(val, indent=1))
+
+    show("tool_mix", tool_mix(con))
+    show("recall", recall(con))
+    show("compaction", compaction(con))
     traj, drops, dmn = context_trajectory(con)
     print(f"== context_trajectory (daemon={dmn}, {len(traj)} pts, drops={drops}) ==")
     print(traj)
-    print("== stop_reason_health =="); print(json.dumps(stop_reason_health(con), indent=1))
-    print("== flagged_queue ==");       print(json.dumps(flagged_queue(con), indent=1))
-    print("== cache_econ ==");          print(json.dumps(cache_econ(con), indent=1))
+    show("stop_reason_health", stop_reason_health(con))
+    show("flagged_queue", flagged_queue(con))
+    show("cache_econ", cache_econ(con))
     pa = per_ask(con)
     print(f"== per_ask (daemon={pa['daemon']}, model={pa['model']}, {len(pa['asks'])} asks) ==")
     print(json.dumps(pa["asks"][:8], indent=1))

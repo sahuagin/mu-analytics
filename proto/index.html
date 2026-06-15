@@ -399,9 +399,7 @@ function pageHead(title,lede,scope){
 /* ---------- OVERVIEW ---------- */
 function renderOverview(v){
   const k=DATA.kpi.by_kind, totS=DATA.cost_by_kind.reduce((a,b)=>a+b.sessions,0);
-  const muH=(DATA.hallucination_by_model||[]).filter(h=>h.fleet==='mu');
-  const degDen=muH.reduce((a,h)=>a+h.sessions,0);
-  const degPct=degDen?(muH.reduce((a,h)=>a+h.rate*h.sessions,0)/degDen*100):0;
+  const degPct=(DATA.degradation_rate!=null)?DATA.degradation_rate:0;
   const ccTot=(DATA.cost_by_fleet.find(f=>f.label==='cc')||{}).sessions||0;
   const muTot=(DATA.cost_by_fleet.find(f=>f.label==='mu')||{}).sessions||0;
   const byKind=Object.fromEntries(DATA.cost_by_kind.map(x=>[x.label,x.sessions]));
@@ -418,7 +416,7 @@ function renderOverview(v){
       <div class="kpi subs"><div class="top"><div class="name"><span class="dot ring"></span>Subscription</div><div class="tag">notional</div></div>
         <div class="big">≈ <span class="cur">$</span>${money(k.subscription).replace('$','')}</div><div class="meta"><span class="b">${n0.format(byKind.subscription||0)}</span> sessions · API-rate equiv, $0 charged</div><div class="bar"><i style="width:${(k.subscription/DATA.kpi.total_api_rate_equiv*100).toFixed(2)}%"></i></div></div>
       <div class="kpi"><div class="top"><div class="name">Sessions</div><div class="tag">51 days</div></div><div class="big">${n0.format(totS)}</div><div class="meta"><span class="b">${n0.format(ccTot)}</span> cc · <span class="b">${n0.format(muTot)}</span> mu</div><div class="bar"><i style="width:100%;background:var(--panel-3)"></i></div></div>
-      <div class="kpi warn"><div class="top"><div class="name">Degradation</div><div class="tag">mu · trust</div></div><div class="big">${degPct.toFixed(1)}<span class="cur">%</span></div><div class="meta">mu hallucination rate · cc is artifact-laden</div><div class="bar"><i style="width:${Math.min(100,degPct).toFixed(1)}%"></i></div></div>
+      <div class="kpi warn"><div class="top"><div class="name">Degradation</div><div class="tag">mu · stop_reasons</div></div><div class="big">${degPct.toFixed(1)}<span class="cur">%</span></div><div class="meta">non-clean finishes — degraded / abort / error / truncated</div><div class="bar"><i style="width:${Math.min(100,degPct).toFixed(1)}%"></i></div></div>
     </div>
     <div class="grid">
       <div class="panel col-4"><div class="ph"><div><div class="ttl">Cost by harness</div><div class="desc">claude-code carries effectively all spend</div></div><div class="hint">rate-equiv $</div></div><div class="chart" id="o-fleet" style="height:170px"></div></div>
@@ -441,7 +439,7 @@ function renderSessions(v){
     <div class="panel">
       <div class="ph" style="align-items:center">
         <div><div class="ttl">All sessions</div><div class="desc">sortable · ⚑ = operator-marked · click to drill into the transcript and rate</div></div>
-        <div class="tbl-tools"><div class="toggle" id="tg-flag"><span class="sw2"></span> only ⚑ marked</div></div>
+        <div class="tbl-tools"><button class="ct-btn" id="export-marks">⭳ export marks</button><div class="toggle" id="tg-flag"><span class="sw2"></span> only ⚑ marked</div></div>
       </div>
       <table class="sess" id="sess"><thead><tr>
         <th style="width:22px"></th><th data-sort="started">Started <span class="ar">▲▼</span></th>
@@ -710,10 +708,32 @@ function sessionTable(){
     body.querySelectorAll('.stars').forEach(sb=>sb.querySelectorAll('.st').forEach(st=>st.addEventListener('click',()=>{const n=+st.dataset.n; sb.querySelectorAll('.st').forEach(x=>x.classList.toggle('on',+x.dataset.n<=n));})));
     body.querySelectorAll('.turn-h').forEach(h=>h.addEventListener('click',()=>h.parentElement.classList.toggle('open')));
     body.querySelectorAll('.convo-tools .ct-btn').forEach(btn=>btn.addEventListener('click',()=>{const d=btn.closest('.drill'),open=btn.dataset.act==='expand';d.querySelectorAll('.turn').forEach(t=>t.classList.toggle('open',open));}));
+    body.querySelectorAll('.markbox').forEach(mb=>{
+      const sb=mb.querySelector('.stars'); if(!sb)return;
+      mb.querySelector('.save').addEventListener('click',()=>{
+        const btn=mb.querySelector('.save'), rating=mb.querySelectorAll('.stars .st.on').length;
+        if(!rating){ btn.textContent='pick a rating ★'; return; }
+        const marks=JSON.parse(localStorage.getItem('mu-marks')||'[]');
+        marks.push({id:sb.dataset.sid, task_id:sb.dataset.sid, rating, note:mb.querySelector('textarea').value, created_at_unix_ms:Date.now()});
+        localStorage.setItem('mu-marks', JSON.stringify(marks));
+        btn.textContent='✓ saved'; refreshExportCount();
+      });
+    });
     document.querySelectorAll('#sess thead th[data-sort]').forEach(th=>{const on=th.dataset.sort===TBL.sortKey;th.classList.toggle('act',on);th.querySelector('.ar').textContent=on?(TBL.sortDir<0?'▼':'▲'):'▲▼';});
   }
+  function refreshExportCount(){ const ex=document.getElementById('export-marks'); if(!ex)return;
+    const n=JSON.parse(localStorage.getItem('mu-marks')||'[]').length; ex.textContent='⭳ export marks'+(n?' ('+n+')':''); }
   document.querySelectorAll('#sess thead th[data-sort]').forEach(th=>th.addEventListener('click',()=>{const k=th.dataset.sort;if(TBL.sortKey===k)TBL.sortDir*=-1;else{TBL.sortKey=k;TBL.sortDir=(k==='started'||k==='fleet'||k==='model'||k==='kind'||k==='outcome')?1:-1;}TBL.open=null;render();}));
   const tg=document.getElementById('tg-flag'); tg.addEventListener('click',()=>{TBL.flaggedOnly=!TBL.flaggedOnly;tg.classList.toggle('on',TBL.flaggedOnly);TBL.open=null;render();});
+  const ex=document.getElementById('export-marks');
+  if(ex) ex.addEventListener('click',()=>{
+    const marks=JSON.parse(localStorage.getItem('mu-marks')||'[]');
+    if(!marks.length){ ex.textContent='no local marks yet'; setTimeout(refreshExportCount,1400); return; }
+    const jsonl=marks.map(m=>JSON.stringify(m)).join('\n')+'\n';
+    const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([jsonl],{type:'application/x-ndjson'}));
+    a.download='dashboard-marks-'+new Date().toISOString().slice(0,10)+'.jsonl'; a.click();
+  });
+  refreshExportCount();
   render();
 }
 

@@ -120,9 +120,14 @@ def ingest_inbox(inbox=INBOX):
 
 
 if __name__ == "__main__":
-    import engine
+    import sys
 
-    marks = read_marks(engine.connect())
-    print(f"{len(marks)} marks (event-log + dashboard):")
-    for m in marks:
-        print(f"  {m['date']}  ★{m['rating']}  [{m['source']}]  {m['note'][:54]}")
+    if len(sys.argv) > 1 and sys.argv[1] == "ingest":
+        print(f"marks ingested: {ingest_inbox()}")
+    else:
+        import engine
+
+        marks = read_marks(engine.connect())
+        print(f"{len(marks)} marks (event-log + dashboard):")
+        for m in marks:
+            print(f"  {m['date']}  ★{m['rating']}  [{m['source']}]  {m['note'][:54]}")
