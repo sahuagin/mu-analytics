@@ -44,12 +44,19 @@ MU_GLOB = os.path.join(MU_EVENTS, "*", "*.jsonl")
 CC_EVENTS: str = PATHS.get("cc_events_out", "") or ""
 CC_GLOB = os.path.join(CC_EVENTS, "*", "*.jsonl") if CC_EVENTS else ""
 
-# Per-fleet session key (the `daemon` column, the real per-session grouping key).
-# mu: the per-session dir name — session_id is NOT unique across a daemon's logs.
-# cc: session_id IS the session UUID and unique, so use it directly (a parent-dir
-#     key would collapse every cc session into the single "claude-code" provider dir).
-_MU_DAEMON = r"regexp_replace(filename, '.*/([^/]+)/[^/]+$', '\1')"
-_CC_DAEMON = "session_id"
+# `daemon` is the daemon PROCESS, not the session. A mu daemon dir hosts MULTIPLE
+# session files (session-1.jsonl, session-2.jsonl, supervisor.jsonl), and the raw
+# session_id is only a per-daemon counter ("session-1") that repeats across every
+# daemon — so neither alone identifies a session.
+_MU_DAEMON = r"regexp_replace(filename, '.*/([^/]+)/[^/]+$', '\1')"  # the daemon dir name
+_CC_DAEMON = "session_id"  # cc has no daemon; one file == one session (the UUID)
+
+# `session` is the canonical per-session key: daemon_id:session_id. That
+# disambiguates session-1 from session-2 within a daemon (the legacy/M3 unit —
+# panels.mu_sessions groups by (daemon, session_id)). cc is one session per file,
+# so its session IS the unique session_id.
+_MU_SESSION = _MU_DAEMON + " || ':' || session_id"
+_CC_SESSION = "session_id"
 
 # Pin the schema so `payload` is JSON (not a kind-only MAP). Unlisted fields are
 # ignored; ignore_errors skips malformed lines.
@@ -58,10 +65,10 @@ _COLUMNS = (
     "'actor':'JSON','payload':'JSON'}"
 )
 
-# A source = (glob, fleet, daemon_expr). The production default reads every fleet.
-_DEFAULT_SOURCES = [(MU_GLOB, "mu", _MU_DAEMON)]
+# A source = (glob, fleet, daemon_expr, session_expr). The default reads every fleet.
+_DEFAULT_SOURCES = [(MU_GLOB, "mu", _MU_DAEMON, _MU_SESSION)]
 if CC_GLOB:
-    _DEFAULT_SOURCES.append((CC_GLOB, "cc", _CC_DAEMON))
+    _DEFAULT_SOURCES.append((CC_GLOB, "cc", _CC_DAEMON, _CC_SESSION))
 
 
 def _glob_has_files(pattern: str) -> bool:
@@ -83,13 +90,14 @@ def events_present() -> bool:
     return _dir_has_jsonl(MU_EVENTS) or _dir_has_jsonl(CC_EVENTS)
 
 
-def _select_for(glob: str, fleet: str, daemon_expr: str) -> str:
+def _select_for(glob: str, fleet: str, daemon_expr: str, session_expr: str) -> str:
     return f"""
         SELECT
             id,
             session_id,
             timestamp_unix_ms AS ts,
             {daemon_expr} AS daemon,
+            {session_expr} AS session,
             json_extract_string(payload, '$.kind') AS kind,
             payload,
             '{fleet}' AS fleet
@@ -105,23 +113,27 @@ def _select_for(glob: str, fleet: str, daemon_expr: str) -> str:
 def connect(
     glob: str | None = None,
     fleet: str = "mu",
-    sources: list[tuple[str, str, str]] | None = None,
+    sources: list[tuple[str, ...]] | None = None,
 ) -> duckdb.DuckDBPyConnection:
     """Open a connection with the `ev` view registered over the event log(s).
 
-    Columns: id, session_id, ts, daemon (the per-session key), kind,
-    payload (JSON), fleet ('mu' | 'cc').
+    Columns: id, session_id, ts, daemon (the daemon process),
+    session (the canonical per-session key, daemon_id:session_id for mu),
+    kind, payload (JSON), fleet ('mu' | 'cc'). Group analytics by `session`,
+    not `daemon` — a mu daemon hosts multiple sessions.
 
     - Production (no args): UNION every present fleet (mu + cc), so one schema
       feeds every panel for both fleets. Empty/missing fleets are skipped.
     - `glob=`/`fleet=`: a single explicit source (the hermetic-fixture path used
-      by tests), keyed mu-style (parent dir).
-    - `sources=`: an explicit list of (glob, fleet, daemon_expr) tuples.
+      by tests), keyed mu-style (daemon dir + session_id).
+    - `sources=`: explicit (glob, fleet, daemon_expr[, session_expr]) tuples;
+      a 3-tuple defaults session_expr to daemon_expr.
     """
     if glob is not None:
-        srcs: list[tuple[str, str, str]] = [(glob, fleet, _MU_DAEMON)]
+        srcs: list[tuple[str, ...]] = [(glob, fleet, _MU_DAEMON, _MU_SESSION)]
     elif sources is not None:
-        srcs = sources
+        # accept 3-tuples (legacy) by defaulting session_expr to the daemon_expr
+        srcs = [s if len(s) >= 4 else (s[0], s[1], s[2], s[2]) for s in sources]
     else:
         srcs = [s for s in _DEFAULT_SOURCES if _glob_has_files(s[0])]
 
@@ -132,8 +144,8 @@ def connect(
         con.execute(
             "CREATE OR REPLACE VIEW ev AS SELECT "
             "NULL::BIGINT AS id, NULL::VARCHAR AS session_id, NULL::BIGINT AS ts, "
-            "NULL::VARCHAR AS daemon, NULL::VARCHAR AS kind, NULL::JSON AS payload, "
-            "NULL::VARCHAR AS fleet WHERE false"
+            "NULL::VARCHAR AS daemon, NULL::VARCHAR AS session, NULL::VARCHAR AS kind, "
+            "NULL::JSON AS payload, NULL::VARCHAR AS fleet WHERE false"
         )
         return con
 

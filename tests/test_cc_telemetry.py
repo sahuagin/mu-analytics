@@ -159,6 +159,56 @@ class TestCcTelemetry(unittest.TestCase):
         self.assertEqual(cct._normalize_stop("tool_use"), "tool_use")
         self.assertEqual(cct._normalize_stop(None), "end_turn")
 
+    def test_injected_user_turns_tagged_meta(self):
+        # skill bodies (isMeta) + tagged command/notification text are still emitted
+        # (no information loss) but marked meta=true; genuine operator text is not —
+        # so operator-language analytics can filter harness noise.
+        records = [
+            {
+                "type": "user",
+                "timestamp": "2026-06-15T10:00:00.000Z",
+                "message": {"role": "user", "content": "please fix the bug"},
+            },
+            {  # skill body injected as an isMeta array-form turn
+                "type": "user",
+                "isMeta": True,
+                "timestamp": "2026-06-15T10:00:01.000Z",
+                "message": {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "Base directory for this skill: /x"}],
+                },
+            },
+            {  # slash command (string content, structural tag)
+                "type": "user",
+                "timestamp": "2026-06-15T10:00:02.000Z",
+                "message": {"role": "user", "content": "<command-name>/goal</command-name> stop"},
+            },
+            {
+                "type": "assistant",
+                "timestamp": "2026-06-15T10:00:03.000Z",
+                "message": {
+                    "id": "m1",
+                    "role": "assistant",
+                    "model": "x",
+                    "stop_reason": "end_turn",
+                    "content": [{"type": "text", "text": "done"}],
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                },
+            },
+        ]
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "sess-meta.jsonl")
+            with open(p, "w") as f:
+                for o in records:
+                    f.write(json.dumps(o) + "\n")
+            _sid, events = cct.convert_session(p)
+        ums = self._by(events, "user_message")
+        self.assertEqual(len(ums), 3)  # all emitted — no information loss
+        operator = [u for u in ums if not u.get("meta")]
+        injected = [u for u in ums if u.get("meta")]
+        self.assertEqual([u["content"] for u in operator], ["please fix the bug"])
+        self.assertEqual(len(injected), 2)  # skill body + slash-command turn
+
 
 if __name__ == "__main__":
     unittest.main()
