@@ -276,13 +276,16 @@ def convert_session(path: str):
     )
     model = mc.most_common(1)[0][0] if mc else "unknown"
     for usage, _mdl in assistants.values():
+        if not isinstance(usage, dict):
+            continue
         pt += usage.get("input_tokens") or 0
         ct += usage.get("output_tokens") or 0
         cr += usage.get("cache_read_input_tokens") or 0
         cw += usage.get("cache_creation_input_tokens") or 0
         cc = usage.get("cache_creation") or {}
-        cw5 += cc.get("ephemeral_5m_input_tokens") or 0
-        cw1 += cc.get("ephemeral_1h_input_tokens") or 0
+        if isinstance(cc, dict):
+            cw5 += cc.get("ephemeral_5m_input_tokens") or 0
+            cw1 += cc.get("ephemeral_1h_input_tokens") or 0
 
     sid = os.path.basename(path)
     if sid.endswith(".jsonl"):
