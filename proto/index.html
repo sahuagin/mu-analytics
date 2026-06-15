@@ -323,7 +323,7 @@
    config.toml multipliers (read 0.10x / 5m-write 1.25x / 1h-write 2.00x).
    ====================================================================== */
 const MULT = { read:0.10, write_5m:1.25, write_1h:2.00 };
-const DATA = {
+const DATA = /*BEGIN_DATA*/{
   as_of:"2026-06-12T09:14:00",
   kpi:{ total_api_rate_equiv:9052.40, by_kind:{subscription:8740.00, billed:312.40, free:0.00} },
   cost_by_kind:[ {label:"subscription",sessions:1500,cost:8740.00},{label:"billed",sessions:120,cost:312.40},{label:"free",sessions:264,cost:0.00} ],
@@ -365,7 +365,7 @@ const DATA = {
   context_compactions:[9,15,22], // indices where a drop happens
   tool_mix:[ {tool:"Bash",count:1840},{tool:"Read",count:1520},{tool:"Edit",count:880},{tool:"Grep",count:610},{tool:"Write",count:420},{tool:"Workflow",count:96},{tool:"Task",count:74} ],
   recall:[ {source:"Memory",items:412,tokens:38400},{source:"ProjectFile",items:188,tokens:96200},{source:"Bootloader",items:34,tokens:12100} ],
-};
+}/*END_DATA*/;
 
 /* ======================= helpers (same as index.html) ======================= */
 const usd0=new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:0});
@@ -399,6 +399,12 @@ function pageHead(title,lede,scope){
 /* ---------- OVERVIEW ---------- */
 function renderOverview(v){
   const k=DATA.kpi.by_kind, totS=DATA.cost_by_kind.reduce((a,b)=>a+b.sessions,0);
+  const muH=(DATA.hallucination_by_model||[]).filter(h=>h.fleet==='mu');
+  const degDen=muH.reduce((a,h)=>a+h.sessions,0);
+  const degPct=degDen?(muH.reduce((a,h)=>a+h.rate*h.sessions,0)/degDen*100):0;
+  const ccTot=(DATA.cost_by_fleet.find(f=>f.label==='cc')||{}).sessions||0;
+  const muTot=(DATA.cost_by_fleet.find(f=>f.label==='mu')||{}).sessions||0;
+  const byKind=Object.fromEntries(DATA.cost_by_kind.map(x=>[x.label,x.sessions]));
   v.innerHTML = pageHead('Overview','Cost, outcomes and degradation across both harnesses — the all-metrics landing.','both')+`
     <div class="recon">
       <div class="cell"><div class="k"><span class="dot solid"></span>Real spend · billed</div><div class="v">${money(k.billed)}</div></div>
@@ -408,11 +414,11 @@ function renderOverview(v){
     </div>
     <div class="kpis k4">
       <div class="kpi billed"><div class="top"><div class="name"><span class="dot solid"></span>Billed</div><div class="tag">paid · real $</div></div>
-        <div class="big"><span class="cur">$</span>${money(k.billed).replace('$','')}</div><div class="meta"><span class="b">120</span> sessions · money actually charged</div><div class="bar"><i style="width:${(k.billed/DATA.kpi.total_api_rate_equiv*100).toFixed(2)}%"></i></div></div>
+        <div class="big"><span class="cur">$</span>${money(k.billed).replace('$','')}</div><div class="meta"><span class="b">${n0.format(byKind.billed||0)}</span> sessions · money actually charged</div><div class="bar"><i style="width:${(k.billed/DATA.kpi.total_api_rate_equiv*100).toFixed(2)}%"></i></div></div>
       <div class="kpi subs"><div class="top"><div class="name"><span class="dot ring"></span>Subscription</div><div class="tag">notional</div></div>
-        <div class="big">≈ <span class="cur">$</span>${money(k.subscription).replace('$','')}</div><div class="meta"><span class="b">1,500</span> sessions · API-rate equiv, $0 charged</div><div class="bar"><i style="width:${(k.subscription/DATA.kpi.total_api_rate_equiv*100).toFixed(2)}%"></i></div></div>
-      <div class="kpi"><div class="top"><div class="name">Sessions</div><div class="tag">51 days</div></div><div class="big">${n0.format(totS)}</div><div class="meta"><span class="b">1,402</span> cc · <span class="b">482</span> mu</div><div class="bar"><i style="width:100%;background:var(--panel-3)"></i></div></div>
-      <div class="kpi warn"><div class="top"><div class="name">Degradation</div><div class="tag">mu · trust</div></div><div class="big">6.3<span class="cur">%</span></div><div class="meta">mu hallucination rate · cc is artifact-laden</div><div class="bar"><i style="width:6.3%"></i></div></div>
+        <div class="big">≈ <span class="cur">$</span>${money(k.subscription).replace('$','')}</div><div class="meta"><span class="b">${n0.format(byKind.subscription||0)}</span> sessions · API-rate equiv, $0 charged</div><div class="bar"><i style="width:${(k.subscription/DATA.kpi.total_api_rate_equiv*100).toFixed(2)}%"></i></div></div>
+      <div class="kpi"><div class="top"><div class="name">Sessions</div><div class="tag">51 days</div></div><div class="big">${n0.format(totS)}</div><div class="meta"><span class="b">${n0.format(ccTot)}</span> cc · <span class="b">${n0.format(muTot)}</span> mu</div><div class="bar"><i style="width:100%;background:var(--panel-3)"></i></div></div>
+      <div class="kpi warn"><div class="top"><div class="name">Degradation</div><div class="tag">mu · trust</div></div><div class="big">${degPct.toFixed(1)}<span class="cur">%</span></div><div class="meta">mu hallucination rate · cc is artifact-laden</div><div class="bar"><i style="width:${Math.min(100,degPct).toFixed(1)}%"></i></div></div>
     </div>
     <div class="grid">
       <div class="panel col-4"><div class="ph"><div><div class="ttl">Cost by harness</div><div class="desc">claude-code carries effectively all spend</div></div><div class="hint">rate-equiv $</div></div><div class="chart" id="o-fleet" style="height:170px"></div></div>
@@ -461,17 +467,23 @@ function renderCost(v){
   const gaps=[]; for(let g=1;g<=60;g++) gaps.push(g);
   const c5=gaps.map(g=>+sessCost(g,5,MULT.write_5m).toFixed(2));
   const c1h=gaps.map(g=>+sessCost(g,60,MULT.write_1h).toFixed(2));
-  const gMed=9, i=gMed-1, save=((c5[i]-c1h[i])/c5[i]*100);
+  const ce=DATA.cache_econ||{};
+  const med=+(ce.median_gap_min||0), p90=+(ce.p90_gap_min||0), saveP90=+(ce.save_pct_p90||0);
+  const w5=ce.w5_tokens||0, w1=ce.w1_tokens||0, oneHr=(w5+w1)?Math.round(w1/(w5+w1)*100):0;
+  const perAskXs=(DATA.per_ask||[]).map(a=>a.cost).sort((a,b)=>a-b);
+  const perAskMed=perAskXs.length?perAskXs[Math.floor(perAskXs.length/2)]:0;
+  const co=DATA.cost_composition_top_session||{}, ctot=Object.values(co).reduce((a,b)=>a+b,0)||1;
+  const crShare=Math.round((co.cache_read||0)/ctot*100);
 
   v.innerHTML = pageHead('Cost &amp; Cache','Where the dollars go, and the cache-tier economics that move them. Interactive — the cache model uses live config multipliers.','both')+`
     <div class="kpis k3">
-      <div class="kpi"><div class="top"><div class="name">Per-ask · median</div><div class="tag">rate-equiv</div></div><div class="big"><span class="cur">$</span>0.23</div><div class="meta">across all tool-using asks</div></div>
-      <div class="kpi accent"><div class="top"><div class="name">1h-cache saving</div><div class="tag">at ${gMed}min gap</div></div><div class="big">${save.toFixed(0)}<span class="cur">%</span></div><div class="meta">${money(c5[i])} → ${money(c1h[i])} per session</div></div>
-      <div class="kpi warn"><div class="top"><div class="name">Cache-read share</div><div class="tag">top session</div></div><div class="big">82<span class="cur">%</span></div><div class="meta">input + output are rounding error</div></div>
+      <div class="kpi"><div class="top"><div class="name">Per-ask · median</div><div class="tag">rate-equiv</div></div><div class="big"><span class="cur">$</span>${money(perAskMed).replace('$','')}</div><div class="meta">across this session's asks</div></div>
+      <div class="kpi accent"><div class="top"><div class="name">1h-cache adoption</div><div class="tag">of writes</div></div><div class="big">${oneHr}<span class="cur">%</span></div><div class="meta">already on 1h · saves ${saveP90.toFixed(0)}% at the p90 ${p90.toFixed(1)}min gap</div></div>
+      <div class="kpi warn"><div class="top"><div class="name">Cache-read share</div><div class="tag">top session</div></div><div class="big">${crShare}<span class="cur">%</span></div><div class="meta">input + output are rounding error</div></div>
     </div>
     <div class="grid">
       <div class="panel col-7"><div class="ph"><div><div class="ttl">Cache economics · 5-minute vs 1-hour</div><div class="desc">session cost as think-time between asks grows. When the 5-min window lapses, the next ask re-writes (1.25×) instead of riding a cheap read (0.10×) — that's the jump. 1h pays 2.0× once but survives the gap.</div></div><div class="hint">$/session · 40 asks</div></div><div class="chart" id="cc-cache" style="height:280px"></div></div>
-      <div class="panel col-5"><div class="ph"><div><div class="ttl">Per-ask cost · session mu·a1f3</div><div class="desc">amber bars = asks that paid a 5-min cache re-write after a think-gap</div></div><div class="hint">selectable</div></div><div class="chart" id="cc-perask" style="height:280px"></div></div>
+      <div class="panel col-5"><div class="ph"><div><div class="ttl">Per-ask cost · one session</div><div class="desc">amber bars = asks that paid a 5-min cache re-write after a think-gap</div></div><div class="hint">selectable</div></div><div class="chart" id="cc-perask" style="height:280px"></div></div>
       <div class="panel col-5"><div class="ph"><div><div class="ttl">Cost composition · top session</div><div class="desc">cache-read dominates real spend</div></div><div class="hint" id="cc-comp-h">—</div></div><div class="chart" id="cc-comp" style="height:170px"></div></div>
       <div class="panel col-7"><div class="ph"><div><div class="ttl">Cost by kind</div><div class="desc">notional (subscription) vs paid vs free — the money distinction</div></div><div class="hint">rate-equiv $</div></div><div class="chart" id="cc-kind" style="height:170px"></div>
         <div class="caveat" style="margin-top:12px"><div class="ic">≈</div><div class="body"><b>Subscription = notional.</b> Flat-rate plans are priced at API-equivalent rates so harnesses compare, but <b>$0</b> is actually charged. OpenAI cache is a subset of input, so codex cache cost is approximate.</div></div></div>
@@ -487,13 +499,16 @@ function renderCost(v){
       series:[
         {name:'5-min cache',type:'line',smooth:true,symbol:'none',data:c5,lineStyle:{color:amber(),width:2.4},areaStyle:{color:new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:'rgba(214,161,78,0.22)'},{offset:1,color:'rgba(214,161,78,0.01)'}])}},
         {name:'1-hour cache',type:'line',smooth:true,symbol:'none',data:c1h,lineStyle:{color:accent(),width:2.4},
-          markLine:{silent:true,symbol:'none',lineStyle:{color:'#3a4350',type:'dashed'},label:{formatter:'your ~9min median',color:fgmute(),fontSize:10,position:'insideEndTop'},data:[{xAxis:8}]}}
+          markLine:{silent:true,symbol:'none',lineStyle:{color:'#3a4350',type:'dashed'},label:{color:fgmute(),fontSize:9.5},data:[
+            {xAxis:Math.max(1,Math.round(med)),label:{formatter:`median ${med.toFixed(1)}m`,position:'insideStartTop'}},
+            {xAxis:Math.max(1,Math.min(59,Math.round(p90))),label:{formatter:`p90 ${p90.toFixed(1)}m · 1h −${saveP90.toFixed(0)}%`,position:'insideEndTop'}}
+          ]}}
       ]});
   })();
   // per-ask bars
   (function(){ const c=mk('cc-perask'); if(!c)return;
-    const asks=[]; let rw;
-    for(let i=0;i<28;i++){ rw = (i%7===0); asks.push({i:i+1, v:+(rw?0.41:0.034 + (i%5)*0.004).toFixed(3), rw}); }
+    const asks=(DATA.per_ask||[]).map(a=>({i:a.i, v:a.cost, rw:a.rewrite_5m}));
+    if(!asks.length){ c.setOption({graphic:{type:'text',left:'center',top:'middle',style:{text:'no per-ask data',fill:fgmute(),fontSize:12}}}); return; }
     c.setOption({grid:{left:8,right:14,top:14,bottom:24,containLabel:true},
       tooltip:{...baseTooltip(),trigger:'axis',axisPointer:{type:'shadow'},formatter:p=>{const a=asks[p[0].dataIndex];return `ask <b>#${a.i}</b><br/>${money(a.v)}${a.rw?'<br/><span style="color:#d6a14e">+ 5-min cache re-write</span>':'<br/><span style="color:#33c9a3">cheap cache read</span>'}`;}},
       xAxis:{type:'category',data:asks.map(a=>a.i),axisLine:{lineStyle:{color:GRID}},axisTick:{show:false},axisLabel:{color:fgmute(),fontFamily:"'JetBrains Mono',monospace",fontSize:9,interval:3}},
@@ -533,7 +548,7 @@ function renderInternalOps(v){
   v.innerHTML = pageHead('Internal-ops','Cache, memory/recall and compaction — the engine internals. These signals are mu-native; claude-code emits only token + tool data, so this view is mu-only.','mu')+
     (muOnly?`<div class="caveat thin" style="margin-bottom:16px"><div class="ic">i</div><div class="body"><b>mu fleet only.</b> claude-code does not emit context-assembly, recall or compaction events, so with the fleet filter set to <b>claude-code</b> these panels have no data. Showing mu signals regardless.</div></div>`:'')+`
     <div class="grid">
-      <div class="panel col-7"><div class="ph"><div><div class="ttl">Context trajectory · session mu·a1f3</div><div class="desc">context size across the session; the drops are compactions relieving pressure</div></div><div class="hint">tokens (k)</div></div><div class="chart" id="i-traj" style="height:230px"></div></div>
+      <div class="panel col-7"><div class="ph"><div><div class="ttl">Context trajectory · one session</div><div class="desc">context size across the session; the drops are compactions relieving pressure</div></div><div class="hint">tokens (k)</div></div><div class="chart" id="i-traj" style="height:230px"></div></div>
       <div class="panel col-5"><div class="ph"><div><div class="ttl">Compaction decisions</div><div class="desc">per-span: kept / dropped / summarized — low-volume but high-fidelity (98/100 events carry real decisions)</div></div><div class="hint">mu</div></div><div class="chart" id="i-comp" style="height:170px"></div>
         <div class="legend" id="i-comp-l"></div></div>
       <div class="panel col-5"><div class="ph"><div><div class="ttl">Tool mix</div><div class="desc">tool-call distribution — not captured in the sink</div></div></div><div class="chart" id="i-tools" style="height:210px"></div></div>
@@ -597,7 +612,9 @@ function comp(id,co){ const c=mk(id); if(!c)return;
 
 /* shared trend builders */
 function trendData(){
-  const start=new Date(2026,3,22),out=[];
+  if(DATA.trend_by_day && DATA.trend_by_day.length)
+    return DATA.trend_by_day.map(d=>({date:d.date, cost:d.cost, deg:d.degradation}));
+  const start=new Date(2026,3,22),out=[];   // synthetic fallback (no real trend)
   for(let i=0;i<51;i++){ const d=new Date(start); d.setDate(d.getDate()+i);
     let cost=120+90*Math.sin(i/4.2)+70*Math.sin(i/11.0)+1.6*i;
     let deg=0.04+0.03*Math.sin(i/3.0); if(i>=24&&i<=34) deg+=0.10*Math.sin((i-24)/10.0*Math.PI);

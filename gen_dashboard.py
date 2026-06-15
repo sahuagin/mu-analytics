@@ -26,7 +26,11 @@ else:
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-template = open(os.path.join(HERE, "index.html"), encoding="utf-8").read()
+# The proto is the live template (it superseded the old single-page index.html).
+# It references ../assets (it lives in proto/); the output dir gets its own assets/,
+# so normalize the paths on the way out.
+template = open(os.path.join(HERE, "proto", "index.html"), encoding="utf-8").read()
+template = template.replace("../assets/", "assets/")
 data = build()
 payload = json.dumps(data, indent=2)
 
@@ -37,7 +41,7 @@ filled, n = re.subn(
     template, count=1, flags=re.DOTALL,
 )
 if n != 1:
-    sys.exit("ERROR: /*BEGIN_DATA*/…/*END_DATA*/ markers not found in index.html (n=%d)" % n)
+    sys.exit("ERROR: /*BEGIN_DATA*/…/*END_DATA*/ markers not found in proto/index.html (n=%d)" % n)
 
 out = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, "dist", "index.html")
 outdir = os.path.dirname(out)
