@@ -314,7 +314,7 @@
     <main id="view"></main>
   </div>
 </div>
-<div class="demo-rib">synthetic data · prototype</div>
+<div class="demo-rib" id="demo-rib" style="display:none">synthetic data · demo</div>
 
 <script>
 /* ======================================================================
@@ -767,6 +767,8 @@ function route(){
 function init(){
   buildNav();
   document.getElementById('side-asof').textContent=new Date(DATA.as_of).toLocaleString('en-US',{month:'short',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false});
+  // watermark only when the loaded dataset is synthetic (MU_ANALYTICS_DEMO); real data shows none.
+  if((DATA.note||'').toUpperCase().includes('SYNTHETIC')) document.getElementById('demo-rib').style.display='';
   document.getElementById('collapse').addEventListener('click',()=>{document.body.classList.toggle('collapsed');setTimeout(()=>CHARTS.forEach(c=>{try{c.resize();}catch(e){}}),200);});
   document.querySelectorAll('#fleet button').forEach(b=>b.addEventListener('click',()=>{
     document.querySelectorAll('#fleet button').forEach(x=>x.classList.remove('on')); b.classList.add('on');
