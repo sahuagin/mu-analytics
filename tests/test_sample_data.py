@@ -28,7 +28,7 @@ _CONTRACT_KEYS = {
     "tool_mix",
     "recall",
     "cache_econ",
-    "per_ask",
+    "per_ask_sessions",
     "meta",
     "degradation_rate",
 }

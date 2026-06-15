@@ -277,13 +277,29 @@ def build():
             "w1_tokens": 5800000,
             "read_tokens": 120000000,
         },
-        "per_ask": [
+        "per_ask_sessions": [
             {
-                "i": i + 1,
-                "cost": round(0.41 if i % 7 == 0 else 0.034 + (i % 5) * 0.004, 3),
-                "rewrite_5m": i % 7 == 0,
-            }
-            for i in range(28)
+                "id": "mu·3262",
+                "model": "claude-opus-4-8",
+                "cost": 12.41,
+                "asks": [
+                    {
+                        "i": i + 1,
+                        "cost": round(0.45 if i % 6 == 0 else 0.05 + (i % 5) * 0.01, 3),
+                        "rewrite_5m": i % 6 == 0,
+                    }
+                    for i in range(28)
+                ],
+            },
+            {
+                "id": "mu·8c78",
+                "model": "claude-sonnet-4-6",
+                "cost": 3.13,
+                "asks": [
+                    {"i": i + 1, "cost": round(0.02 + (i % 4) * 0.006, 3), "rewrite_5m": i == 0}
+                    for i in range(20)
+                ],
+            },
         ],
         "stop_reason_health": [
             {"stop_reason": "end_turn", "count": 4492},

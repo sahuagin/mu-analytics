@@ -373,6 +373,45 @@ def per_ask(con, daemon=None, limit=28):
     return {"daemon": daemon, "model": model, "asks": out}
 
 
+def per_ask_sessions(con, n=12, asks_limit=30):
+    """Per-ask cost for the top-cost sessions — the choices behind the Cost page's
+    session selector. Anthropic sessions rank first (real $ + visible cache-write
+    bars). Each: {id, model, cost, asks:[{i,cost,rewrite_5m}]}, costliest first."""
+    cand = con.execute(
+        """
+        WITH am AS (
+            SELECT daemon, count(*) AS n,
+                   sum(COALESCE(json_extract(payload,'$.message.usage.cache_creation_input_tokens')::BIGINT,0)) AS cwsum
+            FROM ev WHERE kind='assistant_message_event' GROUP BY daemon
+        ),
+        tel AS (
+            SELECT daemon, arg_max(json_extract_string(payload,'$.model'), ts) AS model
+            FROM ev WHERE kind='task_telemetry' GROUP BY daemon
+        )
+        SELECT am.daemon, tel.model
+        FROM am LEFT JOIN tel USING (daemon)
+        WHERE am.n BETWEEN 4 AND 60
+        ORDER BY (tel.model LIKE 'claude-%') DESC, am.cwsum DESC, am.n DESC
+        LIMIT 40
+        """
+    ).fetchall()
+    out = []
+    for daemon, model in cand:
+        pa = per_ask(con, daemon=daemon, limit=asks_limit)
+        total = round(sum(a["cost"] for a in pa["asks"]), 2)
+        if total > 0:
+            out.append(
+                {
+                    "id": "mu·" + daemon[:4],
+                    "model": pa["model"] or model or "—",
+                    "cost": total,
+                    "asks": pa["asks"],
+                }
+            )
+    out.sort(key=lambda s: -s["cost"])
+    return out[:n]
+
+
 if __name__ == "__main__":
     import json
 

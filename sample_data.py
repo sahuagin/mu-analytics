@@ -155,7 +155,7 @@ def _build_sink():
     ]
     outcomes = [
         {"outcome": k or "unclassified", "sessions": s}
-        for k, s, c in agg(lambda r: r["outcome_class"])
+        for k, s, _c in agg(lambda r: r["outcome_class"])
     ]
 
     # hallucination rate per (fleet, model): hallu-outcomes / tool-using sessions
@@ -255,7 +255,7 @@ def _event_slices():
             "tool_mix": panels.tool_mix(con),
             "recall": panels.recall(con),
             "cache_econ": panels.cache_econ(con),
-            "per_ask": panels.per_ask(con)["asks"],
+            "per_ask_sessions": panels.per_ask_sessions(con),
             "stop_reason_health": panels.stop_reason_health(con),
             "degradation_by_day": panels.degradation_by_day(con),
             "degradation_rate": panels.degradation_rate(con),
@@ -296,7 +296,7 @@ def build():
         ("context_compactions", []),
         ("tool_mix", []),
         ("recall", []),
-        ("per_ask", []),
+        ("per_ask_sessions", []),
         ("stop_reason_health", []),
         ("compaction", {"mu": dict(_zero_comp), "cc": dict(_zero_comp)}),
         (
