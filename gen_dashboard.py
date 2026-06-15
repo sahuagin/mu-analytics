@@ -27,11 +27,48 @@ else:
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
+
+def _preflight_paths(paths) -> None:
+    """Warn loudly to stderr when configured INPUT paths don't exist.
+
+    The silent-empty trap: a fresh `cp config.example.toml config.toml` leaves the
+    `[paths]` at their `/home/USER/...` placeholders. `_load()` skips a db that
+    doesn't exist (no error), so `build()` returns an empty contract and this page
+    renders a zeroed shell with NO indication why. A loud warning here turns
+    "dashboard opens but shows no data" into an actionable message.
+    """
+    missing = []
+    for key in ("mu_sink_db", "cc_sink_db"):  # cc_events_out/dashboard_out are outputs
+        p = paths.get(key)
+        if isinstance(p, str) and not os.path.exists(os.path.expanduser(p)):
+            missing.append(f"{key} = {p}")
+    roots = paths.get("cc_log_roots")
+    if isinstance(roots, list):
+        for root in roots:
+            if isinstance(root, str) and not os.path.exists(os.path.expanduser(root)):
+                missing.append(f"cc_log_roots = {root}")
+    if not missing:
+        return
+    print(
+        "WARNING: config.toml [paths] point at files that do not exist — the "
+        "dashboard will render EMPTY.\n"
+        "         Edit [paths] for this machine "
+        "(config.example.toml ships /home/USER/... placeholders).",
+        file=sys.stderr,
+    )
+    for m in missing:
+        print(f"         missing: {m}", file=sys.stderr)
+
+
 # The proto is the live template (it superseded the old single-page index.html).
 # It references ../assets (it lives in proto/); the output dir gets its own assets/,
 # so normalize the paths on the way out.
 template = open(os.path.join(HERE, "proto", "index.html"), encoding="utf-8").read()
 template = template.replace("../assets/", "assets/")
+if not os.environ.get("MU_ANALYTICS_DEMO"):
+    from sample_data import PATHS
+
+    _preflight_paths(PATHS)
 data = build()
 payload = json.dumps(data, indent=2)
 
