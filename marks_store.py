@@ -88,6 +88,48 @@ def read_marks(ev_con):
     return out
 
 
+def read_marks_by_session(ev_con):
+    """Latest operator mark per canonical session -> {session_ref: {rating, note, source}}.
+
+    Same two sources read_marks() unions, but keyed by SESSION not date — the shape
+    anomaly_worklist needs to flag/exclude already-labeled sessions:
+      - operator_mark events in the ev view: an operator_mark lives in the MARKED
+        session's own event stream, so its session_ref is fleet:session directly —
+        the linkage is structural (the DuckDB-native, end-state source);
+      - dashboard marks (data/marks.sqlite): keyed by (daemon, session_id) ->
+        mu:<daemon>:<session_id>, or cc:<session_id> when no daemon.
+    session_ref matches features.session_features' key exactly, so it joins directly.
+
+    A session can be re-marked; latest-by-timestamp wins (the operator's current
+    judgment). Deterministic: both sources are read in ts order."""
+    latest = {}  # session_ref -> (ts, {rating, note, source})
+
+    def _offer(ref, ts, rating, note, source):
+        if ref and (ref not in latest or ts >= latest[ref][0]):
+            latest[ref] = (
+                ts,
+                {"rating": _coerce_rating(rating), "note": note or "", "source": source},
+            )
+
+    for ref, ts, rating, note in ev_con.execute(
+        "SELECT fleet || ':' || session, ts, "
+        "json_extract_string(payload, '$.rating'), json_extract_string(payload, '$.note') "
+        "FROM ev WHERE kind = 'operator_mark' "
+        "AND json_extract_string(payload, '$.rating') IS NOT NULL ORDER BY ts"
+    ).fetchall():
+        _offer(ref, ts, rating, note, "mu_event")
+
+    con = _ensure()
+    for sid, daemon, rating, note, ts in con.execute(
+        "SELECT session_id, daemon, rating, note, created_at_unix_ms FROM marks ORDER BY created_at_unix_ms"
+    ):
+        if sid:
+            _offer(f"mu:{daemon}:{sid}" if daemon else f"cc:{sid}", ts, rating, note, "dashboard")
+    con.close()
+
+    return {ref: v for ref, (_ts, v) in latest.items()}
+
+
 def add_mark(task_id, rating, note="", session_id=None, daemon=None, created_at_unix_ms=None):
     """Insert/replace one dashboard mark."""
     con = _ensure()
