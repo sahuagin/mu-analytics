@@ -60,6 +60,34 @@ GOODBYE = re.compile(
     r"well done|see you|sleep",
     re.I,
 )
+# --- positive operator-language markers (DS3): the signed complement of MARKERS.
+# Operator praise / satisfaction toward the assistant. net = pos - neg gives a
+# SIGNED per-session sentiment, so the degradation probe predicts a signed deviation
+# (both "unnoticed-degraded" and "went well") rather than one-sided frustration. ---
+POS_MARKERS = [
+    r"thank",
+    r"great work",
+    r"good work",
+    r"nice work",
+    r"good job",
+    r"good call",
+    r"\bperfect\b",
+    r"\bexcellent\b",
+    r"\bfantastic\b",
+    r"well done",
+    r"\bexactly\b",
+    r"nailed it",
+    r"looks good",
+    r"\blgtm\b",
+    r"love it",
+    r"\bawesome\b",
+    r"\bbrilliant\b",
+    r"much better",
+    r"that works",
+    r"that worked",
+    r"\bbeautiful\b",
+]
+POS_RX = re.compile("|".join(POS_MARKERS), re.I)
 # --- behavior_scan markers (assistant-side health, ported from behavior_scan.py).
 # Pure structure: completion claims gated on a first-person subject, verification
 # tools, announce-then-act, user redirects. Preserved verbatim for parity.
@@ -260,6 +288,76 @@ def scan_frustration(con, explicit=(), daily=False):
             )
 
     hit_rows.sort(key=lambda r: (-r[2] / max(r[3], 1), -r[2]))
+    return hit_rows, all_rows, totals
+
+
+def scan_sentiment(con, explicit=(), daily=False):
+    """Signed operator-sentiment scan (DS3): per session count positive (POS_RX)
+    and negative (RX) operator-language markers and net them. The signed complement
+    of scan_frustration — net = pos - neg, signed rate = 100*net/n_user, so a probe
+    predicts a signed deviation (both 'went well' and 'unnoticed-degraded') rather
+    than one-sided frustration. Operator language only (meta-filtered).
+
+    Returns (hit_rows, all_rows, totals):
+      all_rows: (ref, win, first_ts_iso, n_user, pos, neg, net, ending) for every
+                qualifying session (>=2 user msgs) — the label degradation consumes.
+      hit_rows: sessions with >=1 marker, most-negative-net-rate first (display).
+      totals:   window -> [sessions, pos, neg, user_msgs, earliest_dt].
+    """
+    rows = con.execute(
+        """
+        SELECT fleet, session, id, ts,
+               json_extract_string(payload, '$.content') AS content
+        FROM ev
+        WHERE kind = 'user_message'
+          AND json_extract_string(payload, '$.meta') IS NULL
+        ORDER BY fleet, session, id
+        """
+    ).fetchall()
+
+    sessions = {}  # (fleet, session) -> list[(ts, content)]
+    for fleet, session, _id, ts, content in rows:
+        sessions.setdefault((fleet, session), []).append((ts, content or ""))
+
+    hit_rows, all_rows, totals = [], [], {}
+    for (fleet, session), msgs in sessions.items():
+        n_user = len(msgs)
+        if n_user < 2:
+            continue
+        first_ms = next((ts for ts, _c in msgs if ts), None)
+        first_ts = datetime.fromtimestamp(first_ms / 1000, tz=UTC) if first_ms else None
+        last_user = msgs[-1][1]
+        pos = sum(len(POS_RX.findall(c)) for _ts, c in msgs)
+        neg = sum(len(RX.findall(c)) for _ts, c in msgs)
+        net = pos - neg
+
+        win = _window_of(first_ts, explicit, daily)
+        t = totals.setdefault(win, [0, 0, 0, 0, first_ts])
+        t[0] += 1
+        t[1] += pos
+        t[2] += neg
+        t[3] += n_user
+        if first_ts is not None and (t[4] is None or first_ts < t[4]):
+            t[4] = first_ts
+
+        ref = _session_ref(fleet, session)
+        all_rows.append(
+            (
+                ref,
+                win,
+                first_ts.isoformat() if first_ts else "",
+                n_user,
+                pos,
+                neg,
+                net,
+                _ending(last_user),
+            )
+        )
+        if pos or neg:
+            started = (first_ts or datetime.now(UTC)).astimezone(ET).strftime("%m-%d %H:%M")
+            hit_rows.append((ref, win, pos, neg, net, n_user, started, _ending(last_user)))
+
+    hit_rows.sort(key=lambda r: (r[4] / max(r[5], 1), r[4]))  # most-negative net-rate first
     return hit_rows, all_rows, totals
 
 
