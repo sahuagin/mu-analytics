@@ -77,6 +77,21 @@ contract:
 events:
     ./run engine.py
 
+# Build the typed Anthropic parser (pyo3) into lib/, so cc_telemetry.py uses the
+# typed front door (mu_anthropic_py) instead of the hand-rolled fallback — see
+# cc_telemetry.py:40. The .so is a gitignored build artifact: rerun this after
+# pulling mu changes. Override the mu checkout with MU_REPO=... if it isn't ../mu.
+build-anthropic-parser:
+    #!/bin/sh
+    set -eu
+    mu_repo="${MU_REPO:-$(cd "$(dirname "$(realpath justfile)")/../mu" && pwd)}"
+    ext="$({{py}} -c 'import sysconfig; print(sysconfig.get_config_var("EXT_SUFFIX") or ".so")')"
+    echo "==> cargo build --release -p mu-anthropic-py (mu_repo=$mu_repo)"
+    PYO3_PYTHON="{{py}}" cargo build --release --manifest-path "$mu_repo/Cargo.toml" -p mu-anthropic-py
+    mkdir -p lib
+    cp "$mu_repo/target/release/libmu_anthropic_py.so" "lib/mu_anthropic_py$ext"
+    {{py}} -c "import sys; sys.path.insert(0, 'lib'); import mu_anthropic_py as m; assert m.is_valid_response_message('{}') is False; print('OK: typed parser -> lib/mu_anthropic_py$ext')"
+
 # ── PR flow (jj-aware) ─────────────────────────────────────────────────────
 
 # Bookmark current jj @ as <bookmark>, push, and open a PR. Extra args forward
