@@ -52,12 +52,13 @@ class TestDegradationAssemble(unittest.TestCase):
     def test_join_and_split(self):
         with tempfile.TemporaryDirectory() as tmp:
             ev = os.path.join(tmp, "events")
-            # A: 2 user msgs, one with a frustration marker -> scan-qualifying (label)
+            # A: 2 user msgs, mixed sentiment -> scan-qualifying (signed label).
+            # msg1: 1 neg marker ("why are you"); msg2: 2 pos markers ("perfect", "thank").
             _write(
                 os.path.join(ev, "d1", "session-1.jsonl"),
                 [
-                    _ev(1, "user_message", {"content": "please stop doing that"}),
-                    _ev(2, "user_message", {"content": "why are you doing this"}),
+                    _ev(1, "user_message", {"content": "why are you doing this"}),
+                    _ev(2, "user_message", {"content": "that's perfect, thank you"}),
                     _ev(3, "tool_call", {"name": "Read", "call_id": "c1"}),
                     _ev(4, "done", {"stop_reason": "end_turn", "elapsed_ms": 2000}),
                     _ev(5, "task_telemetry", _tt()),
@@ -88,8 +89,8 @@ class TestDegradationAssemble(unittest.TestCase):
         self.assertEqual(len(a["X_un"][0]), len(a["names"]))
         self.assertIn("harness=mu", a["names"])
         self.assertIn("calls", a["names"])
-        # y = 100 * hits / n_user = 100 * 2 / 2 = 100 for session A
-        self.assertEqual(a["y"], [100.0])
+        # signed y = 100 * net / n_user; net = pos(2) - neg(1) = +1, n_user=2 -> +50
+        self.assertEqual(a["y"], [50.0])
 
 
 if __name__ == "__main__":

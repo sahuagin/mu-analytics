@@ -143,5 +143,23 @@ class TestFrustrationScan(unittest.TestCase):
         self.assertIn("INC", totals)
 
 
+class TestSentimentScan(unittest.TestCase):
+    """DS3 signed scan: net = pos - neg, meta-filtered, keyed by session_ref."""
+
+    def test_signed_net_per_session(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            con = _connect(tmp)
+            _hit, all_rows, _tot = scans.scan_sentiment(con)
+        # all_rows: (ref, win, first_ts, n_user, pos, neg, net, ending)
+        by_ref = {r[0]: r for r in all_rows}
+        # session-1: "stop"+"why are you" = 2 neg, 0 pos -> net -2 (meta msg excluded)
+        self.assertEqual(by_ref["mu:d1:session-1"][4:7], (0, 2, -2))
+        self.assertEqual(by_ref["mu:d1:session-1"][3], 3)  # n_user (meta excluded)
+        # session-2: "stop" (neg) + "ok thanks" (pos "thank") -> balanced, net 0
+        self.assertEqual(by_ref["mu:d1:session-2"][4:7], (1, 1, 0))
+        # cc: "thanks for the help" (1 pos), no neg -> net +1 (positive sentiment)
+        self.assertEqual(by_ref["cc:ccuuid"][4:7], (1, 0, 1))
+
+
 if __name__ == "__main__":
     unittest.main()
