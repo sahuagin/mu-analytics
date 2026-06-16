@@ -12,6 +12,10 @@ dependencies = ["duckdb>=1.5"]
 [project.optional-dependencies]
 # `cost.py` is a standalone polars diagnostic; the dashboard build path does not need it.
 cost = ["polars>=1.0"]
+# `degradation.py` is a standalone ML diagnostic (telemetry→frustration probe); the
+# dashboard build path does not need it. assemble() is dep-free; only train()/render()
+# touch numpy/sklearn, so the substrate-join test runs in the lean gate without these.
+ml = ["numpy>=2", "scikit-learn>=1.5"]
 # Convenience for non-pkg environments. The default `just test` uses stdlib
 # unittest (no install needed); pytest is optional and discovers the same tests.
 dev = ["pytest>=8", "ruff>=0.15", "ty"]
