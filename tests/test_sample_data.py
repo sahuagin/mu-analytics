@@ -32,6 +32,9 @@ _CONTRACT_KEYS = {
     "per_ask_sessions",
     "meta",
     "degradation_rate",
+    "degradation_probe",
+    "audit_findings",
+    "delegations",
 }
 
 
@@ -135,6 +138,52 @@ class TestDemoContract(unittest.TestCase):
         self.assertIn("flags", d["meta"])
         self.assertIn("mu", d["compaction"])
         self.assertIsInstance(d["degradation_rate"], (int, float))
+
+
+class TestDegradationProbe(unittest.TestCase):
+    """The fold: degradation-ml.json + mu-audit-findings.tsv -> DATA section."""
+
+    def test_shapes_probe_and_audit(self):
+        import json
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ml = {
+                "meta": {
+                    "r2": 0.1,
+                    "mae": 20.0,
+                    "n_interactive": 2,
+                    "n_unattended": 1,
+                    "importances": [["input_tok", 0.4]],
+                },
+                "sessions": [
+                    # interactive: pred>obs (unnoticed) and pred<obs (task_frust)
+                    {"ref": "mu:d1:s1", "kind": "interactive", "obs": -10.0, "pred": 30.0},
+                    {"ref": "cc:u2", "kind": "interactive", "obs": 50.0, "pred": -5.0},
+                    {"ref": "mu:d3:s3", "kind": "unattended", "pred": -40.0},
+                ],
+            }
+            with open(os.path.join(tmp, "degradation-ml.json"), "w") as f:
+                json.dump(ml, f)
+            with open(os.path.join(tmp, "mu-audit-findings.tsv"), "w") as f:
+                f.write("session_ref\tfirst_ts\tseverity\tinvariant\tevent_id\tdetail\n")
+                f.write("mu:d1:s1\t2026-06-15\tHigh\trepeated_identical_tool_call\t452\tstuck\n")
+            out = sample_data._degradation_probe(tmp)
+
+        dp = out["degradation_probe"]
+        self.assertEqual(dp["r2"], 0.1)
+        # unnoticed = highest resid (pred-obs); task_frust = lowest
+        self.assertEqual(dp["unnoticed"][0]["ref"], "mu:d1:s1")  # resid +40
+        self.assertEqual(dp["task_frust"][0]["ref"], "cc:u2")  # resid -55
+        self.assertEqual(dp["unattended"][0]["ref"], "mu:d3:s3")
+        # audit findings parsed by column
+        self.assertEqual(len(out["audit_findings"]), 1)
+        self.assertEqual(out["audit_findings"][0]["invariant"], "repeated_identical_tool_call")
+
+    def test_missing_files_degrade_to_empty(self):
+        out = sample_data._degradation_probe("/nonexistent/stats/dir")
+        self.assertEqual(out["degradation_probe"], {})
+        self.assertEqual(out["audit_findings"], [])
 
 
 if __name__ == "__main__":

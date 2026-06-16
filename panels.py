@@ -8,6 +8,7 @@ Cost math reuses sample_data's rate table + formula — never re-derived here.
 `./run panels.py` prints each slice (a verification harness).
 """
 
+import datetime
 import json
 import math
 import os
@@ -347,6 +348,99 @@ def flagged_queue(con, limit=12):
             }
         )
     return out
+
+
+_DELEGATION_KINDS = (
+    "worker_spawned",
+    "worker_exited",
+    "worker_failed",
+    "worker_timeout",
+    "mailbox_message_posted",
+    "mailbox_message_consumed",
+)
+
+
+def delegations(con):
+    """Worker-orchestration slice for the Delegations page (was a stub): each spawned
+    worker (pot/model/prompt) paired best-effort — by order within the orchestrator
+    session, since the events carry no shared worker id — with its terminal event
+    (exit_code / failed reason / timeout), plus the session's mailbox traffic.
+    mu-native (cc emits no worker/mailbox events). Returns a Sessions-style filterable
+    worker list + outcome/mailbox aggregates."""
+    kinds = "','".join(_DELEGATION_KINDS)
+    rows = con.execute(
+        f"SELECT fleet, session, kind, ts, payload FROM ev "
+        f"WHERE kind IN ('{kinds}') ORDER BY fleet, session, id"
+    ).fetchall()
+
+    sess = {}
+    for fleet, session, kind, ts, payload in rows:
+        p = json.loads(payload) if isinstance(payload, str) else payload
+        e = sess.setdefault(
+            (fleet, session), {"spawn": [], "term": [], "posted": 0, "consumed": 0, "mk": {}}
+        )
+        if kind == "worker_spawned":
+            e["spawn"].append((ts, p))
+        elif kind in ("worker_exited", "worker_failed", "worker_timeout"):
+            e["term"].append((kind, p))
+        elif kind == "mailbox_message_posted":
+            e["posted"] += 1
+            mk = p.get("message_kind") or "?"
+            e["mk"][mk] = e["mk"].get(mk, 0) + 1
+        else:  # mailbox_message_consumed
+            e["consumed"] += 1
+
+    workers, by_outcome, mk_total = [], {}, {}
+    posted = consumed = 0
+    for (fleet, session), e in sess.items():
+        ref = f"{fleet}:{session}"
+        posted += e["posted"]
+        consumed += e["consumed"]
+        for k, n in e["mk"].items():
+            mk_total[k] = mk_total.get(k, 0) + n
+        for i, (ts, sp) in enumerate(e["spawn"]):
+            outcome, detail, elapsed = "running", "", None
+            if i < len(e["term"]):
+                tk, tp = e["term"][i]
+                if tk == "worker_exited":
+                    code = tp.get("exit_code")
+                    outcome = "exited" if code == 0 else "exit-nonzero"
+                    detail, elapsed = f"exit {code}", tp.get("elapsed_ms")
+                elif tk == "worker_failed":
+                    outcome, detail = "failed", tp.get("reason") or ""
+                else:  # worker_timeout
+                    outcome, detail, elapsed = "timeout", "timed out", tp.get("elapsed_ms")
+            by_outcome[outcome] = by_outcome.get(outcome, 0) + 1
+            workers.append(
+                {
+                    "session_ref": ref,
+                    "pot": sp.get("pot_name", ""),
+                    "model": sp.get("model") or "unknown",
+                    "prompt": (sp.get("prompt_summary") or "")[:140],
+                    "started": datetime.datetime.fromtimestamp(
+                        (ts or 0) / 1000, tz=datetime.UTC
+                    ).isoformat(),
+                    "outcome": outcome,
+                    "detail": detail,
+                    "elapsed_ms": elapsed,
+                    "mailbox": e["posted"] + e["consumed"],
+                }
+            )
+    workers.sort(key=lambda w: w["started"], reverse=True)
+    return {
+        "workers": workers,
+        "orchestrators": len(sess),
+        "by_outcome": [
+            {"outcome": k, "n": v} for k, v in sorted(by_outcome.items(), key=lambda x: -x[1])
+        ],
+        "mailbox": {
+            "posted": posted,
+            "consumed": consumed,
+            "by_kind": [
+                {"kind": k, "n": v} for k, v in sorted(mk_total.items(), key=lambda x: -x[1])
+            ],
+        },
+    }
 
 
 # --- cache economics: real median inter-ask gap + savings at that gap ---
