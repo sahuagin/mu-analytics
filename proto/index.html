@@ -563,6 +563,10 @@ function renderBehavioral(v){
       <div class="panel col-5"><div class="ph"><div><div class="ttl">Hallucination rate by model</div><div class="desc">trust the mu rows; cc is instrumentation-capped</div></div></div><div class="chart" id="b-hall" style="height:180px"></div></div>
       <div class="panel col-7"><div class="ph"><div><div class="ttl">Flagged for review</div><div class="desc">low-confidence + tombstoned + self-flagged sessions — the queue worth a human look${STATE.fleet!=='both'?' · highlighting '+fleetName(STATE.fleet):''}</div></div><div class="hint">${q.length} flagged</div></div>
         <div class="queue" id="b-queue"></div></div>
+      <div class="panel col-7"><div class="ph"><div><div class="ttl">Telemetry → operator-sentiment probe</div><div class="desc">HistGradientBoosting predicts signed sentiment (pos−neg per 100 msg) from telemetry only; the residual tails flag where telemetry and the operator disagree</div></div><div class="hint" id="b-probe-skill"></div></div>
+        <div id="b-probe" style="margin-top:8px"></div></div>
+      <div class="panel col-5"><div class="ph"><div><div class="ttl">mu-audit process findings</div><div class="desc">deterministic process-layer auditors (mu audit) over the event log</div></div><div class="hint">${(DATA.audit_findings||[]).length} findings</div></div>
+        <div id="b-audit" style="margin-top:8px"></div></div>
     </div>`;
   outBars('b-out', DATA.outcomes);
   degTrend('b-trend');
@@ -573,6 +577,27 @@ function renderBehavioral(v){
       <div class="qmain"><div class="qt">${x.id} · <span class="dim">${x.model.replace('claude-','')}</span></div><div class="qs">${x.why}</div></div>
       <span class="reason ${x.reason}">${x.reason==='deg'?'degraded':x.reason==='err'?'error-loop':x.reason==='tomb'?'poisoned':'self-flag'}</span>
       <div class="qconf">${x.conf}</div></div>`).join('') : `<div class="empty" style="padding:24px;color:var(--fg-mute);text-align:center">No flagged sessions for this fleet.</div>`;
+  // ML-degradation probe + mu-audit findings (folded from degradation.py + audit_sweep.py)
+  (function(){
+    const P=DATA.degradation_probe||{};
+    const sk=document.getElementById('b-probe-skill');
+    if(sk) sk.textContent = (P.r2!=null) ? `R² ${P.r2} · MAE ${P.mae} · ${P.n_interactive||0} sessions` : 'no probe data';
+    const host=document.getElementById('b-probe');
+    if(host){
+      const imp=(P.importances||[]).slice(0,6).map(t=>`<span class="chip">${t[0]} <b>${t[1]}</b></span>`).join(' ');
+      const tbl=(rows,col)=>(rows&&rows.length)?`<table class="sess"><tbody>`+rows.slice(0,6).map(w=>`<tr class="main">
+          <td><span class="mono" style="font-size:11px">${(w.ref||'').slice(0,30)}</span></td>
+          <td class="r dim">obs ${w.obs}</td><td class="r dim">pred ${w.pred}</td>
+          <td class="r" style="color:${col}">Δ${w.resid}</td></tr>`).join('')+`</tbody></table>`:`<div class="empty" style="padding:10px;color:var(--fg-mute)">none</div>`;
+      host.innerHTML = `<div style="margin-bottom:10px">${imp||'<span class="dim">no importances</span>'}</div>
+        <div class="dim" style="font-size:11px;margin-bottom:3px">telemetry rosier than the operator felt — candidate unnoticed-degraded</div>${tbl(P.unnoticed,'var(--amber)')}
+        <div class="dim" style="font-size:11px;margin:10px 0 3px">operator warmer than telemetry predicts</div>${tbl(P.task_frust,'var(--accent)')}`;
+    }
+    const ah=document.getElementById('b-audit'); const A=DATA.audit_findings||[];
+    if(ah) ah.innerHTML = A.length? A.slice(0,12).map(f=>`<div class="qrow"><div class="qi" style="background:var(--amber-soft);color:var(--amber)">⚠</div>
+        <div class="qmain"><div class="qt"><span class="mono" style="font-size:11px">${(f.ref||'').slice(0,26)}</span> · <span class="dim">${f.invariant}</span></div><div class="qs">${(f.detail||'').slice(0,90)}</div></div>
+        <span class="reason deg">${f.severity}</span></div>`).join('') : `<div class="empty" style="padding:24px;color:var(--fg-mute);text-align:center">no findings recorded</div>`;
+  })();
 }
 
 /* ---------- INTERNAL-OPS ---------- */
@@ -610,6 +635,48 @@ function renderInternalOps(v){
   })();
   barH('i-tools', DATA.tool_mix.slice().sort((a,b)=>a.count-b.count).map(r=>({label:r.tool,val:r.count,color:cssVar('--blue'),raw:true})), 12);
   barH('i-recall', DATA.recall.slice().sort((a,b)=>a.tokens-b.tokens).map(r=>({label:r.source,val:r.tokens,color:cssVar('--violet'),raw:true,sub:r.items+' items'})), 22);
+}
+
+/* ---------- DELEGATIONS ---------- */
+function renderDelegations(v){
+  const D=DATA.delegations||{workers:[],orchestrators:0,by_outcome:[],mailbox:{posted:0,consumed:0,by_kind:[]}};
+  const W=D.workers||[];
+  const oc=o=>o==='exited'?'var(--accent)':(o==='failed'||o==='exit-nonzero')?'var(--red)':o==='timeout'?'var(--amber)':'var(--fg-mute)';
+  const models=[...new Set(W.map(w=>w.model))].sort();
+  const outcomes=[...new Set(W.map(w=>w.outcome))].sort();
+  const mbk=(D.mailbox.by_kind||[]).map(k=>`${k.kind} ${k.n}`).join(' · ')||'—';
+  const outSummary=(D.by_outcome||[]).map(o=>`${o.outcome} ${o.n}`).join(' · ')||'—';
+  const DG={model:'',outcome:''};
+  v.innerHTML = pageHead('Delegations','Worker orchestration off the event log — spawned workers (pot · model · prompt) paired best-effort with their terminal outcome, plus mailbox traffic. mu-native; claude-code emits no worker/mailbox events.','mu')+`
+    <div class="kpis k4">
+      <div class="kpi"><div class="top"><div class="name">Orchestrators</div><div class="tag">sessions</div></div><div class="big">${n0.format(D.orchestrators)}</div><div class="meta">sessions that spawned or messaged workers</div></div>
+      <div class="kpi"><div class="top"><div class="name">Workers</div><div class="tag">spawned</div></div><div class="big">${n0.format(W.length)}</div><div class="meta">${outSummary}</div></div>
+      <div class="kpi"><div class="top"><div class="name">Mailbox</div><div class="tag">posted</div></div><div class="big">${n0.format(D.mailbox.posted)}</div><div class="meta">${n0.format(D.mailbox.consumed)} consumed · ${mbk}</div></div>
+    </div>
+    <div class="panel"><div class="ph"><div><div class="ttl">Spawned workers</div><div class="desc">paired best-effort with the terminal event by order within the orchestrator session</div></div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <select id="dg-model" class="mono" style="background:var(--panel-2);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:12px"><option value="">all models</option>${models.map(m=>`<option>${m}</option>`).join('')}</select>
+        <select id="dg-outcome" class="mono" style="background:var(--panel-2);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:12px"><option value="">all outcomes</option>${outcomes.map(o=>`<option>${o}</option>`).join('')}</select>
+        <span class="hint" id="dg-count">${W.length} workers</span>
+      </div></div>
+      <div id="dg-rows" style="margin-top:8px"></div></div>`;
+  function draw(){
+    const list=W.filter(w=>(!DG.model||w.model===DG.model)&&(!DG.outcome||w.outcome===DG.outcome));
+    document.getElementById('dg-count').textContent=`${list.length} worker${list.length===1?'':'s'}`+((DG.model||DG.outcome)?' (filtered)':'');
+    const host=document.getElementById('dg-rows');
+    host.innerHTML = list.length
+      ? `<table class="sess"><tbody>`+list.map(w=>`<tr class="main">
+          <td><span class="mono" style="font-size:12px">${w.session_ref.replace('mu:','')}</span></td>
+          <td><span class="mono" style="font-size:12px">${w.model.replace('google/','').replace('claude-','')}</span></td>
+          <td><span class="outcome-chip"><span class="sw" style="background:${oc(w.outcome)}"></span>${w.outcome}</span></td>
+          <td class="dim">${w.detail||''}</td>
+          <td class="r dim">${w.elapsed_ms!=null?(w.elapsed_ms/1000).toFixed(1)+'s':'—'}</td>
+          <td class="dim" style="max-width:380px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${w.prompt||''}</td></tr>`).join('')+`</tbody></table>`
+      : `<div class="empty" style="padding:24px;text-align:center;color:var(--fg-mute)">No workers match this filter.</div>`;
+  }
+  draw();
+  document.getElementById('dg-model').addEventListener('change',e=>{DG.model=e.target.value;draw();});
+  document.getElementById('dg-outcome').addEventListener('change',e=>{DG.outcome=e.target.value;draw();});
 }
 
 /* ======================= chart primitives ======================= */
@@ -819,7 +886,7 @@ const PAGES=[
   {id:'cost',title:'Cost & Cache',group:'explore',icon:'<line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>',render:renderCost},
   {id:'behavioral',title:'Behavioral',group:'monitor',icon:'<path d="M3 12h4l3 8 4-16 3 8h4"/>',render:renderBehavioral,mo:true},
   {id:'internalops',title:'Internal-ops',group:'monitor',icon:'<rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/>',render:renderInternalOps,mu:true},
-  {id:'delegations',title:'Delegations',group:'monitor',icon:'<circle cx="5" cy="6" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><path d="M5 8v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8"/><line x1="12" y1="13" x2="12" y2="16"/>',stub:true},
+  {id:'delegations',title:'Delegations',group:'monitor',icon:'<circle cx="5" cy="6" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><path d="M5 8v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8"/><line x1="12" y1="13" x2="12" y2="16"/>',render:renderDelegations,mu:true},
 ];
 const STATE={page:'overview',fleet:'both'};
 

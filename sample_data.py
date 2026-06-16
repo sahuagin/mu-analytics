@@ -347,10 +347,52 @@ def _event_slices(con):
             "stop_reason_health": panels.stop_reason_health(con),
             "degradation_by_day": panels.degradation_by_day(con),
             "degradation_rate": panels.degradation_rate(con),
+            "delegations": panels.delegations(con),
         }, True
     except Exception as e:  # never let the event layer break the cost dashboard
         print(f"  warn: event-log slices unavailable ({e}); rendering sink-only", file=sys.stderr)
         return {}, False
+
+
+# stats dir holds the refresh-produced degradation-ml.json + mu-audit-findings.tsv;
+# it's the grandparent of dashboard_out (~/mu-stats/analytics/index.html -> ~/mu-stats).
+_STATS_DIR = os.path.dirname(
+    os.path.dirname(
+        os.path.expanduser(PATHS.get("dashboard_out", "~/mu-stats/analytics/index.html"))
+    )
+)
+
+
+def _degradation_probe(stats_dir=_STATS_DIR):
+    """Fold the ML-degradation probe (degradation-ml.json) + mu-audit findings
+    (mu-audit-findings.tsv) — both produced by refresh.sh — into the DATA contract's
+    degradation section. The signed probe's residual tails: unnoticed = telemetry
+    rosier than the operator felt (pred>obs); task_frust = operator warmer (pred<obs).
+    Graceful-degrade to empty when the files are absent (CI / fresh checkout)."""
+    out = {"degradation_probe": {}, "audit_findings": []}
+    try:
+        ml = json.loads(open(os.path.join(stats_dir, "degradation-ml.json")).read())
+        inter = [s for s in ml.get("sessions", []) if s.get("kind") == "interactive"]
+        unatt = [s for s in ml.get("sessions", []) if s.get("kind") == "unattended"]
+        for s in inter:
+            s["resid"] = round(s.get("pred", 0) - s.get("obs", 0), 1)
+        out["degradation_probe"] = {
+            **ml.get("meta", {}),
+            "unnoticed": sorted(inter, key=lambda s: -s["resid"])[:12],
+            "task_frust": sorted(inter, key=lambda s: s["resid"])[:12],
+            "unattended": sorted(unatt, key=lambda s: s.get("pred", 0))[:15],
+        }
+    except (OSError, ValueError) as e:
+        print(f"  warn: degradation probe unavailable ({e})", file=sys.stderr)
+    try:
+        cols = ["ref", "first_ts", "severity", "invariant", "event_id", "detail"]
+        lines = open(os.path.join(stats_dir, "mu-audit-findings.tsv")).read().splitlines()[1:]
+        out["audit_findings"] = [
+            dict(zip(cols, ln.split("\t"), strict=False)) for ln in lines if ln.strip()
+        ]
+    except OSError:
+        pass
+    return out
 
 
 def build():
@@ -400,6 +442,15 @@ def build():
         ("recall", []),
         ("per_ask_sessions", []),
         ("stop_reason_health", []),
+        (
+            "delegations",
+            {
+                "workers": [],
+                "orchestrators": 0,
+                "by_outcome": [],
+                "mailbox": {"posted": 0, "consumed": 0, "by_kind": []},
+            },
+        ),
         ("compaction", {"mu": dict(_zero_comp), "cc": dict(_zero_comp)}),
         (
             "cache_econ",
@@ -415,6 +466,8 @@ def build():
         ),
     ):
         result.setdefault(k, default)
+    # ML-degradation probe + mu-audit findings (refresh-produced files) -> DATA.
+    result.update(_degradation_probe())
     result["meta"] = {
         "enrichment_status": "pending_commit_enricher",
         "duckdb": present,
