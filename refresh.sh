@@ -23,5 +23,9 @@ echo "[$(date '+%Y-%m-%d %H:%M:%S')] mu-analytics refresh"
 "$mu" analytics compact --events-dir "$cc_events" --db "$cc_sink" >/dev/null 2>&1 || echo "  warn: cc compact failed"
 # fold any dashboard-exported marks (data/marks_inbox/*.jsonl) into marks.sqlite
 "$here/run" marks_store.py ingest >/dev/null 2>&1 || echo "  warn: marks ingest failed"
+# degradation probe + mu-audit findings -> the data the dashboard's degradation
+# section folds in (replaces the old degradation_ml.py -> mu_audit_sweep.py chain).
+"$here/run" degradation.py >/dev/null 2>&1 || echo "  warn: degradation probe failed"
+"$here/run" audit_sweep.py >/dev/null 2>&1 || echo "  warn: audit sweep failed"
 # regenerate the dashboard into the served path
 "$here/run" gen_dashboard.py "$out" || echo "  warn: dashboard gen failed"
