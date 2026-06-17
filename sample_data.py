@@ -36,6 +36,16 @@ _PRE = ("anthropic/", "google/", "openai/", "openrouter/", "deepseek/", "x-ai/")
 HALLU = {"narrative_no_action", "hollow_commit", "lying_state"}  # mu-042 hallu set
 
 
+def _is_dashboard_noise(row):
+    """Rows excluded from the default dashboard corpus.
+
+    `faux` is mu's test provider/model and visually dominates recent live days with
+    zero-cost, zero-tool sessions. Keep the policy intentionally narrow for now:
+    local/free real model work remains visible.
+    """
+    return (row.get("model") or "").lower() == "faux"
+
+
 def rate_key(m):
     if not m:
         return None
@@ -164,7 +174,9 @@ def _build_sink(mu_session_map=None):
     if mu_session_map:
         mu_rows = _sessionize_mu(mu_rows, mu_session_map)
     # cc's sink is already session-grained (one row per transcript) — pass through.
-    rows = mu_rows + _load("cc", PATHS["cc_sink_db"])
+    raw_rows = mu_rows + _load("cc", PATHS["cc_sink_db"])
+    noise_rows = [r for r in raw_rows if _is_dashboard_noise(r)]
+    rows = [r for r in raw_rows if not _is_dashboard_noise(r)]
     now = datetime.datetime.now().isoformat(timespec="seconds")
     if not rows:
         return {
@@ -190,6 +202,7 @@ def _build_sink(mu_session_map=None):
             "all_sessions": [],
             "hallucination_by_model": [],
             "trend_by_day": [],
+            "default_filters": {"excluded_test_sessions": 0, "excluded_test_models": []},
         }
 
     def agg(keyfn):
@@ -293,6 +306,10 @@ def _build_sink(mu_session_map=None):
     return {
         "as_of": now,
         "note": "logs are live; every number is an as-of snapshot, not a final figure",
+        "default_filters": {
+            "excluded_test_sessions": len(noise_rows),
+            "excluded_test_models": ["faux"] if noise_rows else [],
+        },
         "kpi": {
             "total_api_rate_equiv": round(sum(r["cost"] for r in rows), 2),
             "by_kind": {x["label"]: x["cost"] for x in by_kind},
@@ -334,9 +351,12 @@ def _event_slices(con):
         import panels
 
         traj, drops, _ = panels.context_trajectory(con)
+        flagged = panels.flagged_queue(con)
+        flagged_total = len(panels.flagged_queue(con, limit=10_000))
         return {
             "marks": marks_store.read_marks(con),
-            "flagged_queue": panels.flagged_queue(con),
+            "flagged_queue": flagged,
+            "flagged_queue_total": flagged_total,
             "compaction": panels.compaction(con),
             "context_trajectory": traj,
             "context_compactions": drops,
@@ -438,6 +458,7 @@ def build():
     for k, default in (
         ("marks", []),
         ("flagged_queue", []),
+        ("flagged_queue_total", 0),
         ("context_trajectory", []),
         ("context_compactions", []),
         ("tool_mix", []),

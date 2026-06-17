@@ -127,6 +127,7 @@ def build():
     return {
         "as_of": "2026-06-12T09:14:00",
         "note": "SYNTHETIC DEMO DATA — every figure here is fabricated for illustration",
+        "default_filters": {"excluded_test_sessions": 0, "excluded_test_models": []},
         "kpi": {
             "total_api_rate_equiv": 9052.40,
             "by_kind": {"subscription": 8740.00, "billed": 312.40, "free": 0.00},
@@ -269,6 +270,7 @@ def build():
             {"date": "2026-06-04", "rating": 2, "note": "anchored on old code"},
             {"date": "2026-06-10", "rating": 4, "note": "good recovery"},
         ],
+        "flagged_queue_total": 5,
         "flagged_queue": [
             {
                 "id": "mu·44a1",

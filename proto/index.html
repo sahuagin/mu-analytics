@@ -319,7 +319,7 @@
     <header class="top">
       <div class="pg-title"><span class="crumb">analytics /</span><span id="pg-name">Overview</span></div>
       <div class="spacer"></div>
-      <span class="fl-lbl">focus</span>
+      <span class="fl-lbl">highlight</span>
       <div class="seg fleet" id="fleet">
         <button data-fleet="both" class="on">both</button>
         <button data-fleet="mu">mu</button>
@@ -402,8 +402,8 @@ function disposeCharts(){CHARTS.forEach(c=>{try{c.dispose();}catch(e){}}); CHART
 const accent=()=>cssVar('--accent'),amber=()=>cssVar('--amber'),slate=()=>cssVar('--slate'),blue=()=>cssVar('--blue'),fgmute=()=>cssVar('--fg-mute');
 /* escape arbitrary transcript text before innerHTML — real tool output contains <, >, & and even </div> */
 const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-// fleet emphasis: BOTH fleets always render; "focus" highlights one and dims the
-// other so mu vs cc compare on one screen instead of separate ones.
+// fleet emphasis: BOTH fleets always render; "highlight" dims the
+// other fleet. It is intentionally not a filter.
 const DIM=0.24;
 function emph(fleet){ return (STATE.fleet==='both'||STATE.fleet===fleet)?1:DIM; }
 function rowDim(fleet){ return STATE.fleet!=='both' && STATE.fleet!==fleet; }
@@ -423,11 +423,14 @@ function renderOverview(v){
   const muTot=(DATA.cost_by_fleet.find(f=>f.label==='mu')||{}).sessions||0;
   const nDays=(DATA.trend_by_day||[]).length, nHarness=(DATA.cost_by_fleet||[]).length;
   const byKind=Object.fromEntries(DATA.cost_by_kind.map(x=>[x.label,x.sessions]));
+  const filters=DATA.default_filters||{}, excluded=filters.excluded_test_sessions||0;
+  const artifactOutcome=(DATA.outcomes||[]).find(o=>o.outcome==='narrative_no_action');
+  const artifactShare=artifactOutcome&&totS?artifactOutcome.sessions/totS:0;
   v.innerHTML = pageHead('Overview','Cost, outcomes and degradation across both harnesses — the all-metrics landing.','both')+`
     <div class="recon">
       <div class="cell"><div class="k"><span class="dot solid"></span>Real spend · billed</div><div class="v">${money(k.billed)}</div></div>
       <div class="cell"><div class="k"><span class="dot ring"></span>Notional · subscription</div><div class="v">≈ ${money(k.subscription)}</div></div>
-      <div class="cell"><div class="k"><span class="dot free"></span>Free</div><div class="v">${money(k.free)}</div></div>
+      <div class="cell"><div class="k"><span class="dot free"></span>Free/local</div><div class="v">${money(k.free)}</div></div>
       <div class="cell"><div class="k">API-rate equivalent · total</div><div class="v">≈ ${money(DATA.kpi.total_api_rate_equiv)} <small>rate-equiv</small></div></div>
     </div>
     <div class="kpis k4">
@@ -438,10 +441,11 @@ function renderOverview(v){
       <div class="kpi"><div class="top"><div class="name">Sessions</div><div class="tag">${nDays} days</div></div><div class="big">${n0.format(totS)}</div><div class="meta"><span class="b">${n0.format(ccTot)}</span> cc · <span class="b">${n0.format(muTot)}</span> mu</div><div class="bar"><i style="width:100%;background:var(--panel-3)"></i></div></div>
       <div class="kpi warn"><div class="top"><div class="name">Degradation</div><div class="tag">mu · stop_reasons</div></div><div class="big">${degPct.toFixed(1)}<span class="cur">%</span></div><div class="meta">non-clean finishes — degraded / abort / error / truncated</div><div class="bar"><i style="width:${Math.min(100,degPct).toFixed(1)}%"></i></div></div>
     </div>
+    ${excluded?`<div class="caveat thin" style="margin-bottom:16px"><div class="ic">i</div><div class="body"><b>Default corpus filter:</b> ${n0.format(excluded)} <span class="mono">faux</span> test session${excluded===1?'':'s'} excluded from dashboard aggregates and session lists.</div></div>`:''}
     <div class="grid">
       <div class="panel col-4"><div class="ph"><div><div class="ttl">Cost by harness</div><div class="desc">claude-code carries effectively all spend</div></div><div class="hint">rate-equiv $</div></div><div class="chart" id="o-fleet" style="height:170px"></div></div>
       <div class="panel col-5"><div class="ph"><div><div class="ttl">Cost by model</div><div class="desc">opus-class dominates; tint = harness</div></div><div class="hint">rate-equiv $</div></div><div class="chart" id="o-model" style="height:230px"></div></div>
-      <div class="panel col-3"><div class="ph"><div><div class="ttl">Session outcomes</div><div class="desc">forensic classification</div></div></div><div class="obars" id="o-out" style="margin-top:8px"></div></div>
+      <div class="panel col-3"><div class="ph"><div><div class="ttl">Outcome classifier status</div><div class="desc">commit/PR enricher pending; not a reliable quality split yet</div></div></div><div style="padding:10px 2px 2px;color:var(--fg-mute);font-size:12px;line-height:1.55"><b class="mono" style="color:var(--amber)">${artifactOutcome?n0.format(artifactOutcome.sessions):0}</b> sessions are currently classified as <span class="mono">narrative_no_action</span>${artifactShare?` (${pct(artifactShare,1)})`:''}. Use stop-reason degradation, audit findings, and manual marks for review until enrichment lands.</div></div>
       <div class="panel col-12"><div class="ph"><div><div class="ttl">Cost &amp; degradation over time</div><div class="desc">daily rate-equiv spend (area) vs output-degradation rate (line), with your session ratings as points</div></div><div class="hint">$/day · degradation %</div></div><div class="chart" id="o-trend" style="height:270px"></div></div>
     </div>
     <div class="foot"><div>mu observability · <span class="mono">overview</span></div><div class="mono">${n0.format(totS)} sessions · ${nHarness} harness${nHarness===1?'':'es'} · ${DATA.cost_by_model.length} models</div></div>`;
@@ -449,7 +453,6 @@ function renderOverview(v){
   // charts
   barH('o-fleet', DATA.cost_by_fleet.map(r=>({label:fleetName(r.label),val:r.cost,color:FLEET_COLOR[r.label],sub:r.sessions+' sess',dim:emph(r.label)})), 36);
   barH('o-model', DATA.cost_by_model.slice().sort((a,b)=>a.cost-b.cost).map(r=>({label:r.model.replace('google/','').replace('claude-',''),val:r.cost,color:FLEET_COLOR[r.fleet],sub:fleetName(r.fleet),dim:emph(r.fleet)})), 13);
-  outBars('o-out', DATA.outcomes);
   trendChart('o-trend', true);
 }
 
@@ -459,7 +462,7 @@ function renderSessions(v){
   const models=[...new Set(all.map(s=>s.model))].sort();
   const outs=[...new Set(all.map(s=>s.outcome))].sort();
   const opt=(arr,ph)=>`<option value="">${ph}</option>`+arr.map(x=>`<option>${x}</option>`).join('');
-  v.innerHTML = pageHead('Sessions',`All ${n0.format(all.length)} sessions across both harnesses, grouped by day. Filter, or expand a day; click a row to open it and rate. Fleet focus dims the off-fleet rows.`,'both')+`
+  v.innerHTML = pageHead('Sessions',`All ${n0.format(all.length)} sessions across both harnesses, grouped by day. Filter, or expand a day; click a row to open it and rate. Fleet highlight dims off-fleet rows; totals remain global.`,'both')+`
     <div class="panel">
       <div class="ph" style="align-items:center;flex-wrap:wrap;gap:10px">
         <div><div class="ttl">All sessions</div><div class="desc" id="sess-count">—</div></div>
@@ -496,18 +499,20 @@ function renderCost(v){
   const perAskAll=(DATA.per_ask_sessions||[]).flatMap(s=>s.asks.map(a=>a.cost)).sort((a,b)=>a-b);
   const perAskMed=perAskAll.length?perAskAll[Math.floor(perAskAll.length/2)]:0;
   const co=DATA.cost_composition_top_session||{}, ctot=Object.values(co).reduce((a,b)=>a+b,0)||1;
+  const topCost=(DATA.top_sessions||[])[0]||{};
+  const topCostLabel=topCost.id ? `${topCost.id} · ${(topCost.model||'').replace('claude-','')} · ${topCost.started||''}` : '—';
   const crShare=Math.round((co.cache_read||0)/ctot*100);
 
   v.innerHTML = pageHead('Cost &amp; Cache','Where the dollars go, and the cache-tier economics that move them. Interactive — the cache model uses live config multipliers.','both')+`
     <div class="kpis k3">
       <div class="kpi"><div class="top"><div class="name">Per-ask · median</div><div class="tag">rate-equiv</div></div><div class="big"><span class="cur">$</span>${money(perAskMed).replace('$','')}</div><div class="meta">median across sampled sessions</div></div>
       <div class="kpi accent"><div class="top"><div class="name">1h-cache adoption</div><div class="tag">of writes</div></div><div class="big">${oneHr}<span class="cur">%</span></div><div class="meta">already on 1h · saves ${saveP90.toFixed(0)}% at the p90 ${p90.toFixed(1)}min gap</div></div>
-      <div class="kpi warn"><div class="top"><div class="name">Cache-read share</div><div class="tag">top session</div></div><div class="big">${crShare}<span class="cur">%</span></div><div class="meta">input + output are rounding error</div></div>
+      <div class="kpi warn"><div class="top"><div class="name">Cache-read share</div><div class="tag">highest-cost session</div></div><div class="big">${crShare}<span class="cur">%</span></div><div class="meta">input + output are rounding error</div></div>
     </div>
     <div class="grid">
       <div class="panel col-7"><div class="ph"><div><div class="ttl">Cache economics · 5-minute vs 1-hour</div><div class="desc">session cost as think-time between asks grows. When the 5-min window lapses, the next ask re-writes (1.25×) instead of riding a cheap read (0.10×) — that's the jump. 1h pays 2.0× once but survives the gap.</div></div><div class="hint">$/session · 40 asks</div></div><div class="chart" id="cc-cache" style="height:280px"></div></div>
       <div class="panel col-5"><div class="ph" style="align-items:center"><div><div class="ttl">Per-ask cost · <span id="pa-title">session</span></div><div class="desc">cost of each turn; <b style="color:var(--amber)">amber</b> = ask paid a cache write, <b style="color:var(--accent)">teal</b> = rode a cached read</div></div><select id="perask-sel" style="background:var(--panel-2);color:var(--fg);border:1px solid var(--border);border-radius:7px;padding:4px 8px;font-family:var(--mono);font-size:11px;max-width:200px"></select></div><div class="chart" id="cc-perask" style="height:264px"></div></div>
-      <div class="panel col-5"><div class="ph"><div><div class="ttl">Cost composition · top session</div><div class="desc">cache-read dominates real spend</div></div><div class="hint" id="cc-comp-h">—</div></div><div class="chart" id="cc-comp" style="height:170px"></div></div>
+      <div class="panel col-5"><div class="ph"><div><div class="ttl">Cost composition · highest-cost session</div><div class="desc"><span class="mono">${esc(topCostLabel)}</span></div></div><div class="hint" id="cc-comp-h">—</div></div><div class="chart" id="cc-comp" style="height:170px"></div></div>
       <div class="panel col-7"><div class="ph"><div><div class="ttl">Cost by kind</div><div class="desc">notional (subscription) vs paid vs free — the money distinction</div></div><div class="hint">rate-equiv $</div></div><div class="chart" id="cc-kind" style="height:170px"></div>
         <div class="caveat" style="margin-top:12px"><div class="ic">≈</div><div class="body"><b>Subscription = notional.</b> Flat-rate plans are priced at API-equivalent rates so harnesses compare, but <b>$0</b> is actually charged. OpenAI cache is a subset of input, so codex cache cost is approximate.</div></div></div>
     </div>`;
@@ -554,23 +559,28 @@ function renderCost(v){
 
 /* ---------- BEHAVIORAL ---------- */
 function renderBehavioral(v){
-  const q = DATA.flagged_queue;
+  const q = DATA.flagged_queue||[];
+  const flaggedTotal=(DATA.flagged_queue_total!=null)?DATA.flagged_queue_total:q.length;
+  const hall=(DATA.hallucination_by_model||[]);
+  const hallMax=hall.length?Math.max(...hall.map(r=>r.rate||0)):0;
+  const artifactOutcome=(DATA.outcomes||[]).find(o=>o.outcome==='narrative_no_action');
+  const artifactShare=artifactOutcome&&DATA.all_sessions&&DATA.all_sessions.length?artifactOutcome.sessions/DATA.all_sessions.length:0;
+  const hallDisabled=artifactShare>0.5 && hallMax>0.8;
   v.innerHTML = pageHead('Behavioral','Degradation and honesty — the core monitoring goal. Negative findings come straight from the event log today; positive (clean-success) discrimination is pending the commit/PR enricher.','both')+`
     <div class="caveat" style="margin-bottom:16px"><div class="ic">!</div><div class="body"><b>Enrichment pending.</b> The sink collapses ~98.6% of tasks to <span class="mono">narrative_no_action</span> because the classifier runs without commit/PR context. <b>Degradation signals below are real</b> (tool-error loops, DegradedEof, tombstones, self-flags); the positive/negative split firms up once the enricher lands.</div></div>
     <div class="grid">
-      <div class="panel col-5"><div class="ph"><div><div class="ttl">Session outcomes</div><div class="desc">forensic classification across all sessions</div></div></div><div class="obars" id="b-out" style="margin-top:8px"></div></div>
+      <div class="panel col-5"><div class="ph"><div><div class="ttl">Classifier status</div><div class="desc">outcome taxonomy is still enrichment-limited</div></div></div><div style="padding:10px 2px 2px;color:var(--fg-mute);font-size:12px;line-height:1.55"><b class="mono" style="color:var(--amber)">${artifactOutcome?n0.format(artifactOutcome.sessions):0}</b> sessions are <span class="mono">narrative_no_action</span>${artifactShare?` (${pct(artifactShare,1)})`:''}. Do not treat this as a quality distribution yet.</div></div>
       <div class="panel col-7"><div class="ph"><div><div class="ttl">Degradation over time · with your ratings</div><div class="desc">computed degradation (line) with your sparse manual session-ratings dropped on as points — sparse ground-truth against the workhorse metric</div></div><div class="hint">degradation % · ★ rating</div></div><div class="chart" id="b-trend" style="height:240px"></div></div>
-      <div class="panel col-5"><div class="ph"><div><div class="ttl">Hallucination rate by model</div><div class="desc">trust the mu rows; cc is instrumentation-capped</div></div></div><div class="chart" id="b-hall" style="height:180px"></div></div>
-      <div class="panel col-7"><div class="ph"><div><div class="ttl">Flagged for review</div><div class="desc">low-confidence + tombstoned + self-flagged sessions — the queue worth a human look${STATE.fleet!=='both'?' · highlighting '+fleetName(STATE.fleet):''}</div></div><div class="hint">${q.length} flagged</div></div>
+      <div class="panel col-5"><div class="ph"><div><div class="ttl">Hallucination rate by model</div><div class="desc">disabled while classifier is dominated by narrative_no_action</div></div></div><div id="b-hall-note" style="padding:18px 4px;color:var(--fg-mute);font-size:12px;line-height:1.55">${hallDisabled?'Classifier artifact: current rates are near 100% because <span class="mono">narrative_no_action</span> is counted as hallucination. Use audit/findings and degradation signals instead.':'Classifier appears usable for this corpus; chart rendered below.'}</div><div class="chart" id="b-hall" style="height:${hallDisabled?0:180}px;display:${hallDisabled?'none':'block'}"></div></div>
+      <div class="panel col-7"><div class="ph"><div><div class="ttl">Flagged for review</div><div class="desc">low-confidence + tombstoned + self-flagged sessions — the queue worth a human look${STATE.fleet!=='both'?' · highlight '+fleetName(STATE.fleet):''}</div></div><div class="hint">showing ${q.length}${flaggedTotal!==q.length?' of '+flaggedTotal:''}</div></div>
         <div class="queue" id="b-queue"></div></div>
       <div class="panel col-7"><div class="ph"><div><div class="ttl">Telemetry → operator-sentiment probe</div><div class="desc">HistGradientBoosting predicts signed sentiment (pos−neg per 100 msg) from telemetry only; the residual tails flag where telemetry and the operator disagree</div></div><div class="hint" id="b-probe-skill"></div></div>
         <div id="b-probe" style="margin-top:8px"></div></div>
-      <div class="panel col-5"><div class="ph"><div><div class="ttl">mu-audit process findings</div><div class="desc">deterministic process-layer auditors (mu audit) over the event log</div></div><div class="hint">${(DATA.audit_findings||[]).length} findings</div></div>
+      <div class="panel col-5"><div class="ph"><div><div class="ttl">mu-audit process findings</div><div class="desc">deterministic process-layer auditors (mu audit) over the event log</div></div><div class="hint">${(DATA.audit_findings||[]).length>12?'showing 12 of ':''}${(DATA.audit_findings||[]).length} findings</div></div>
         <div id="b-audit" style="margin-top:8px"></div></div>
     </div>`;
-  outBars('b-out', DATA.outcomes);
   degTrend('b-trend');
-  barH('b-hall', DATA.hallucination_by_model.slice().sort((a,b)=>a.rate-b.rate).map(r=>({label:r.model.replace('google/','').replace('claude-',''),val:r.rate,color:FLEET_COLOR[r.fleet],pctMode:true,sub:fleetName(r.fleet),dim:emph(r.fleet)})), 12);
+  if(!hallDisabled) barH('b-hall', hall.slice().sort((a,b)=>a.rate-b.rate).map(r=>({label:r.model.replace('google/','').replace('claude-',''),val:r.rate,color:FLEET_COLOR[r.fleet],pctMode:true,sub:fleetName(r.fleet),dim:emph(r.fleet)})), 12);
   const qe=document.getElementById('b-queue');
   qe.innerHTML = q.length? q.map(x=>`<div class="qrow" style="${rowDim(x.fleet)?'opacity:.3':''}">
       <div class="qi" style="background:${x.reason==='err'||x.reason==='deg'?'var(--amber-soft)':x.reason==='tomb'?'rgba(154,134,196,0.12)':'rgba(125,147,201,0.12)'};color:${x.reason==='tomb'?'var(--violet)':x.reason==='callout'?'var(--blue)':'var(--amber)'}">⚑</div>
