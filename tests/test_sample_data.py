@@ -23,6 +23,7 @@ _CONTRACT_KEYS = {
     "trend_by_day",
     "marks",
     "flagged_queue",
+    "flagged_queue_total",
     "compaction",
     "context_trajectory",
     "context_compactions",
@@ -66,6 +67,12 @@ class TestPureFns(unittest.TestCase):
     def test_day_format(self):
         self.assertRegex(sample_data._day(1_700_000_000_000), r"^\d{4}-\d{2}-\d{2}$")
         self.assertRegex(sample_data._day(None), r"^\d{4}-\d{2}-\d{2}$")  # 0 -> epoch, no crash
+
+    def test_dashboard_noise_policy_is_narrow(self):
+        self.assertTrue(sample_data._is_dashboard_noise({"model": "faux"}))
+        self.assertTrue(sample_data._is_dashboard_noise({"model": "FAUX"}))
+        self.assertFalse(sample_data._is_dashboard_noise({"model": "qwen3-coder", "kind": "free"}))
+        self.assertFalse(sample_data._is_dashboard_noise({"model": "", "kind": "free"}))
 
 
 class TestSessionize(unittest.TestCase):
