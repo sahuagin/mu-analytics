@@ -26,17 +26,44 @@ _SRC_LABEL = {
 _COMPACTION_ACTIONS = ("kept", "dropped", "summarized", "failed")
 
 
+def _normalize_tool_name(name):
+    """Normalize superficial tool spelling so the mix is comparable by fleet."""
+    t = (name or "unknown").strip()
+    low = t.lower().replace(" ", "_").replace("-", "_")
+    aliases = {
+        "read": "read",
+        "file_read": "read",
+        "bash": "bash",
+        "shell": "bash",
+        "edit": "edit",
+        "str_replace_editor": "edit",
+        "write": "write",
+        "grep": "grep",
+        "rg": "grep",
+        "glob": "glob",
+        "webfetch": "web_fetch",
+        "web_fetch": "web_fetch",
+    }
+    return aliases.get(low, low)
+
+
 def tool_mix(con, limit=12):
-    """tool_call name distribution -> [{tool, count}]."""
+    """tool_call distribution normalized by tool name and split by fleet."""
     rows = con.execute(
         """
-        SELECT json_extract_string(payload,'$.name') AS tool, count(*) AS count
+        SELECT fleet, json_extract_string(payload,'$.name') AS tool, count(*) AS count
         FROM ev WHERE kind='tool_call' AND json_extract_string(payload,'$.name') IS NOT NULL
-        GROUP BY 1 ORDER BY count DESC LIMIT ?
-        """,
-        [limit],
+        GROUP BY 1,2 ORDER BY count DESC
+        """
     ).fetchall()
-    return [{"tool": t, "count": int(c)} for t, c in rows]
+    by_tool = {}
+    for fleet, tool, count in rows:
+        key = _normalize_tool_name(tool)
+        rec = by_tool.setdefault(key, {"tool": key, "count": 0, "mu": 0, "cc": 0})
+        rec["count"] += int(count)
+        if fleet in ("mu", "cc"):
+            rec[fleet] += int(count)
+    return sorted(by_tool.values(), key=lambda r: (-r["count"], r["tool"]))[:limit]
 
 
 def recall(con):

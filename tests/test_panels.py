@@ -24,6 +24,10 @@ class TestPanels(unittest.TestCase):
             {"bash": 1, "read": 1},
         )
 
+    def test_tool_name_normalization(self):
+        self.assertEqual(panels._normalize_tool_name("Read"), "read")
+        self.assertEqual(panels._normalize_tool_name("str-replace-editor"), "edit")
+
     def test_recall(self):
         rc = {r["source"]: r["tokens"] for r in panels.recall(self.con)}
         self.assertEqual(rc["ProjectFile"], 5678)

@@ -624,8 +624,8 @@ function renderInternalOps(v){
       <div class="panel col-7"><div class="ph"><div><div class="ttl">Context trajectory · one session</div><div class="desc">context size across the session; the drops are compactions relieving pressure</div></div><div class="hint">tokens (k)</div></div><div class="chart" id="i-traj" style="height:230px"></div></div>
       <div class="panel col-5"><div class="ph"><div><div class="ttl">Compaction decisions</div><div class="desc">per-span: kept / dropped / summarized — low-volume but high-fidelity (98/100 events carry real decisions)</div></div><div class="hint">mu</div></div><div class="chart" id="i-comp" style="height:170px"></div>
         <div class="legend" id="i-comp-l"></div></div>
-      <div class="panel col-5"><div class="ph"><div><div class="ttl">Tool mix</div><div class="desc">tool-call distribution — not captured in the sink</div></div></div><div class="chart" id="i-tools" style="height:210px"></div></div>
-      <div class="panel col-7"><div class="ph"><div><div class="ttl">Recall provenance</div><div class="desc">what memory/recall pulled in, by source and token cost — refs-only, shareable</div></div><div class="hint">items · tokens</div></div><div class="chart" id="i-recall" style="height:210px"></div></div>
+      <div class="panel col-5"><div class="ph"><div><div class="ttl">Tool mix</div><div class="desc">normalized tool-call distribution, split by fleet when both emit comparable events</div></div><div class="hint">mu / cc stacked</div></div><div class="chart" id="i-tools" style="height:210px"></div></div>
+      <div class="panel col-7"><div class="ph"><div><div class="ttl">Recall provenance</div><div class="desc">memory/recall source mix by token cost. This is a coarse context-shape signal, not a quality score.</div></div><div class="hint">items · tokens</div></div><div class="chart" id="i-recall" style="height:210px"></div></div>
     </div>`;
   // trajectory sawtooth
   (function(){ const c=mk('i-traj'); if(!c)return;
@@ -648,7 +648,18 @@ function renderInternalOps(v){
                {type:'text',left:'center',top:'52%',style:{text:pct(1-m.after/m.before,0),fill:accent(),fontFamily:"'JetBrains Mono',monospace",fontSize:18,fontWeight:700,textAlign:'center'}}]});
     document.getElementById('i-comp-l').innerHTML=parts.map(p=>`<div class="it"><span class="sw" style="background:${p.c}"></span>${p.n} <b>${p.v}</b></div>`).join('');
   })();
-  barH('i-tools', DATA.tool_mix.slice().sort((a,b)=>a.count-b.count).map(r=>({label:r.tool,val:r.count,color:cssVar('--blue'),raw:true})), 12);
+  (function(){ const c=mk('i-tools'); if(!c)return;
+    const rows=(DATA.tool_mix||[]).slice().sort((a,b)=>a.count-b.count), labels=rows.map(r=>r.tool);
+    c.setOption({grid:{left:6,right:72,top:8,bottom:6,containLabel:true},
+      tooltip:{...baseTooltip(),trigger:'axis',axisPointer:{type:'shadow'},formatter:p=>{const i=p[0].dataIndex,r=rows[i];return `<b>${r.tool}</b><br/>mu ${n0.format(r.mu||0)} · cc ${n0.format(r.cc||0)}<br/>total ${n0.format(r.count)}`;}},
+      legend:{data:['mu','cc'],top:0,right:8,textStyle:{color:LBL,fontSize:10,fontFamily:"'JetBrains Mono',monospace"},itemWidth:12,itemHeight:8},
+      xAxis:{type:'value',axisLabel:{show:false},splitLine:{show:false},axisLine:{show:false},axisTick:{show:false}},
+      yAxis:{type:'category',data:labels,axisLine:{show:false},axisTick:{show:false},axisLabel:{color:LBL,fontFamily:"'JetBrains Mono',monospace",fontSize:11}},
+      series:[
+        {name:'mu',type:'bar',stack:'tools',barWidth:12,data:rows.map(r=>({value:r.mu||0,itemStyle:{color:accent(),borderRadius:[0,0,0,0]}}))},
+        {name:'cc',type:'bar',stack:'tools',barWidth:12,data:rows.map(r=>({value:r.cc||0,itemStyle:{color:blue(),borderRadius:[0,4,4,0]}})),label:{show:true,position:'right',color:'#cdd4dd',fontFamily:"'JetBrains Mono',monospace",fontSize:11,formatter:p=>n0.format(rows[p.dataIndex].count)}}
+      ]});
+  })();
   barH('i-recall', DATA.recall.slice().sort((a,b)=>a.tokens-b.tokens).map(r=>({label:r.source,val:r.tokens,color:cssVar('--violet'),raw:true,sub:r.items+' items'})), 22);
 }
 
