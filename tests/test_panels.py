@@ -121,7 +121,8 @@ class TestTranscripts(unittest.TestCase):
         # a sidecar per session, named by the display-id slug (· -> -), holding the turns
         mu_file = os.path.join(sdir, panels._slug(_short_id("mu", "txdaemon/s1")) + ".json")
         self.assertTrue(os.path.exists(mu_file))
-        turns = json.load(open(mu_file))
+        with open(mu_file) as f:
+            turns = json.load(f)
         self.assertEqual([t[0] for t in turns], ["u", "a", "t", "t", "t", "u"])
         self.assertTrue(os.path.exists(os.path.join(sdir, "_manifest.json")))
 

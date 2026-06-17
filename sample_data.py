@@ -371,7 +371,8 @@ def _degradation_probe(stats_dir=_STATS_DIR):
     Graceful-degrade to empty when the files are absent (CI / fresh checkout)."""
     out = {"degradation_probe": {}, "audit_findings": []}
     try:
-        ml = json.loads(open(os.path.join(stats_dir, "degradation-ml.json")).read())
+        with open(os.path.join(stats_dir, "degradation-ml.json")) as f:
+            ml = json.load(f)
         inter = [s for s in ml.get("sessions", []) if s.get("kind") == "interactive"]
         unatt = [s for s in ml.get("sessions", []) if s.get("kind") == "unattended"]
         for s in inter:
@@ -386,7 +387,8 @@ def _degradation_probe(stats_dir=_STATS_DIR):
         print(f"  warn: degradation probe unavailable ({e})", file=sys.stderr)
     try:
         cols = ["ref", "first_ts", "severity", "invariant", "event_id", "detail"]
-        lines = open(os.path.join(stats_dir, "mu-audit-findings.tsv")).read().splitlines()[1:]
+        with open(os.path.join(stats_dir, "mu-audit-findings.tsv")) as f:
+            lines = f.read().splitlines()[1:]
         out["audit_findings"] = [
             dict(zip(cols, ln.split("\t"), strict=False)) for ln in lines if ln.strip()
         ]
