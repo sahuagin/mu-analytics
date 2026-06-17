@@ -151,6 +151,13 @@ def connect(
 
     union = "\n        UNION ALL\n".join(_select_for(*s) for s in srcs)
     con.execute(f"CREATE OR REPLACE VIEW ev AS{union}")
+    # The dashboard builds many independent panel slices from `ev`. Leaving `ev` as
+    # a read_json view makes each slice re-scan the same JSONL corpus; materializing
+    # once per connection turns refresh into "read event logs once, query many
+    # times". This is intentionally per-process/temporary: refresh.sh re-compacts
+    # before gen_dashboard, then gen_dashboard opens a fresh connection snapshot.
+    con.execute("CREATE OR REPLACE TEMP TABLE _ev_materialized AS SELECT * FROM ev")
+    con.execute("CREATE OR REPLACE TEMP VIEW ev AS SELECT * FROM _ev_materialized")
     return con
 
 
