@@ -127,6 +127,30 @@ def _short_id(fleet, task_id):
     return f"{fleet}·{h}"
 
 
+def _row_identity(r):
+    """Search/link identity for a dashboard session row.
+
+    Display ids stay short and stable, but review surfaces need the canonical
+    terrain too: mu daemon/session refs, daemon-prefix aliases used by older
+    panels, and cc task ids. These aliases are not necessarily unique; they are
+    search/link affordances, not primary keys.
+    """
+    fleet = r.get("fleet") or "?"
+    key = r.get("task_id") or ""
+    display_id = _short_id(fleet, key)
+    aliases = {display_id, key}
+    ref = r.get("ref") or (f"cc:{key}" if fleet == "cc" and key else key)
+    if ref:
+        aliases.add(ref)
+    daemon = r.get("daemon")
+    sid = r.get("sid")
+    if daemon:
+        aliases.update({daemon, daemon[:4], f"mu·{daemon[:4]}"})
+    if sid:
+        aliases.add(sid)
+    return display_id, ref, sorted(a for a in aliases if a)
+
+
 def _sessionize_mu(mu_rows, sessions):
     """Fold per-task mu sink rows into real session rows via the event-log session
     map (panels.mu_sessions). The sink is task-grained; a "session" on the dashboard
@@ -146,6 +170,9 @@ def _sessionize_mu(mu_rows, sessions):
         sess = {
             "task_id": f"{s['daemon']}/{s['sid']}",  # unique session key for _short_id
             "fleet": "mu",
+            "daemon": s["daemon"],
+            "sid": s["sid"],
+            "ref": f"mu:{s['daemon']}:{s['sid']}",
             "model": s["model"] or last["model"],
             "provider": last.get("provider"),
             "inp": sum(r["inp"] for r in tasks),
@@ -203,6 +230,7 @@ def _build_sink(mu_session_map=None):
             "hallucination_by_model": [],
             "trend_by_day": [],
             "default_filters": {"excluded_test_sessions": 0, "excluded_test_models": []},
+            "session_index": {"by_display_id": {}, "by_alias": {}},
         }
 
     def agg(keyfn):
@@ -248,29 +276,13 @@ def _build_sink(mu_session_map=None):
         "cache_read": round(t["cr"] * trr["input"] * MULT["read"] / 1e6, 2),
         "cache_write": round(t["cw"] * trr["input"] * MULT["write_5m"] / 1e6, 2),
     }
-    top_sessions = [
-        {
-            "id": _short_id(r["fleet"], r.get("task_id")),
-            "fleet": r["fleet"],
-            "model": r["model"],
-            "kind": r["kind"],
-            "cost": round(r["cost"], 4),
-            "outcome": r["outcome_class"] or "unclassified",
-            "tool_calls": r["tools"],
-            "started": _day(r["started_at_unix_ms"]),
-            "flagged": False,
-            "child": bool(r.get("is_child")),
-        }
-        for r in top
-    ]
 
-    # every session, newest first — the Sessions page groups these by day. The
-    # drill-down transcript is NOT embedded here (the corpus is ~450 MB); it's written
-    # per-session to sessions/<slug>.json by gen_dashboard and fetched on demand,
-    # keyed by this same display id (_short_id).
-    all_sessions = [
-        {
-            "id": _short_id(r["fleet"], r.get("task_id")),
+    def session_row(r):
+        display_id, ref, aliases = _row_identity(r)
+        return {
+            "id": display_id,
+            "ref": ref,
+            "aliases": aliases,
             "fleet": r["fleet"],
             "model": r["model"],
             "kind": r["kind"],
@@ -281,10 +293,29 @@ def _build_sink(mu_session_map=None):
             "flagged": False,
             "child": bool(r.get("is_child")),
         }
+
+    top_sessions = [session_row(r) for r in top]
+
+    # every session, newest first — the Sessions page groups these by day. The
+    # drill-down transcript is NOT embedded here (the corpus is ~450 MB); it's written
+    # per-session to sessions/<slug>.json by gen_dashboard and fetched on demand,
+    # keyed by this same display id (_short_id).
+    all_sessions = [
+        session_row(r)
         for r in sorted(
             rows, key=lambda r: -(r["started_at_unix_ms"] or r["ended_at_unix_ms"] or 0)
         )
     ]
+    session_index = {
+        "by_display_id": {s["id"]: s["ref"] for s in all_sessions},
+        "by_alias": {
+            alias: s["id"]
+            for s in all_sessions
+            for alias in s.get("aliases", [])
+            # ambiguous daemon-prefix aliases intentionally map to the newest row;
+            # search still uses all aliases, this map is only a link convenience.
+        },
+    }
 
     dcost, dden, dnum = defaultdict(float), defaultdict(int), defaultdict(int)
     for r in rows:
@@ -321,6 +352,7 @@ def _build_sink(mu_session_map=None):
         "cost_composition_top_session": comp,
         "top_sessions": top_sessions,
         "all_sessions": all_sessions,
+        "session_index": session_index,
         "hallucination_by_model": hallu,
         "trend_by_day": trend,
     }

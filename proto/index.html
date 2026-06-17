@@ -457,17 +457,19 @@ function renderOverview(v){
 }
 
 /* ---------- SESSIONS ---------- */
-function renderSessions(v){
+function renderSessions(v, params=new URLSearchParams()){ 
   const all=(DATA.all_sessions&&DATA.all_sessions.length)?DATA.all_sessions:(DATA.top_sessions||[]);
   const models=[...new Set(all.map(s=>s.model))].sort();
   const outs=[...new Set(all.map(s=>s.outcome))].sort();
   const opt=(arr,ph)=>`<option value="">${ph}</option>`+arr.map(x=>`<option>${x}</option>`).join('');
+  const q0=params.get('q')||params.get('open')||'';
   v.innerHTML = pageHead('Sessions',`All ${n0.format(all.length)} sessions across both harnesses, grouped by day. Filter, or expand a day; click a row to open it and rate. Fleet highlight dims off-fleet rows; totals remain global.`,'both')+`
+
     <div class="panel">
       <div class="ph" style="align-items:center;flex-wrap:wrap;gap:10px">
         <div><div class="ttl">All sessions</div><div class="desc" id="sess-count">—</div></div>
         <div class="tbl-tools">
-          <input id="sess-search" class="fin" placeholder="search id / model" style="width:130px">
+          <input id="sess-search" class="fin" placeholder="search id / ref / model" value="${esc(q0)}" style="width:170px">
           <select id="sess-model" class="fin">${opt(models,'all models')}</select>
           <select id="sess-outcome" class="fin">${opt(outs,'all outcomes')}</select>
           <button class="ct-btn" id="sess-expand">⊕ expand all</button>
@@ -477,7 +479,7 @@ function renderSessions(v){
       </div>
       <div id="sess-days"></div>
     </div>`;
-  sessionTable();
+  sessionTable({search:q0, open:params.get('open')||''});
 }
 
 /* ---------- COST & CACHE ---------- */
@@ -541,7 +543,7 @@ function renderCost(v){
     sel.innerHTML=sessions.map((s,i)=>`<option value="${i}">${s.id} · ${s.model.replace('claude-','')} · ${money(s.cost,s.cost>=100?0:2)}</option>`).join('');
     let chart=null;
     function draw(idx){
-      const s=sessions[idx]; title.textContent=`${s.id} (${s.model.replace('claude-','')})`;
+      const s=sessions[idx]; title.innerHTML=s.session_id?`<a href="${sessionHash(s.session_id)}">${esc(s.id)}</a> (${esc(s.model.replace('claude-',''))})`:`${esc(s.id)} (${esc(s.model.replace('claude-',''))})`;
       if(chart){try{chart.dispose();}catch(e){}}
       chart=mk('cc-perask');
       chart.setOption({grid:{left:8,right:14,top:14,bottom:42,containLabel:true},
@@ -605,7 +607,7 @@ function renderBehavioral(v){
     }
     const ah=document.getElementById('b-audit'); const A=DATA.audit_findings||[];
     if(ah) ah.innerHTML = A.length? A.slice(0,12).map(f=>`<div class="qrow"><div class="qi" style="background:var(--amber-soft);color:var(--amber)">⚠</div>
-        <div class="qmain"><div class="qt"><span class="mono" style="font-size:11px">${(f.ref||'').slice(0,26)}</span> · <span class="dim">${f.invariant}</span></div><div class="qs">${(f.detail||'').slice(0,90)}</div></div>
+        <div class="qmain"><div class="qt"><a class="mono" style="font-size:11px" href="${sessionHash(f.session_id||f.ref||'')}">${(f.ref||'').slice(0,26)}</a> · <span class="dim">${f.invariant}</span></div><div class="qs">${(f.detail||'').slice(0,90)}</div></div>
         <span class="reason deg">${f.severity}</span></div>`).join('') : `<div class="empty" style="padding:24px;color:var(--fg-mute);text-align:center">no findings recorded</div>`;
   })();
 }
@@ -676,7 +678,7 @@ function renderDelegations(v){
     const host=document.getElementById('dg-rows');
     host.innerHTML = list.length
       ? `<table class="sess"><tbody>`+list.map(w=>`<tr class="main">
-          <td><span class="mono" style="font-size:12px">${w.session_ref.replace('mu:','')}</span></td>
+          <td><a class="mono" style="font-size:12px" href="${sessionHash(w.session_id||w.session_ref)}">${w.session_ref.replace('mu:','')}</a></td>
           <td><span class="mono" style="font-size:12px">${w.model.replace('google/','').replace('claude-','')}</span></td>
           <td><span class="outcome-chip"><span class="sw" style="background:${oc(w.outcome)}"></span>${w.outcome}</span></td>
           <td class="dim">${w.detail||''}</td>
@@ -761,10 +763,14 @@ function degTrend(id){ const c=mk(id); if(!c)return; const t=trendData(), mp=mar
 
 /* ======================= sessions table (interactive) ======================= */
 let SS={search:'',model:'',outcome:'',flaggedOnly:false,openDays:null,open:null};
-function sessionTable(){
+function sessionTable(initial={}){
   const host=document.getElementById('sess-days'); if(!host)return;
-  SS={search:'',model:'',outcome:'',flaggedOnly:false,openDays:null,open:null};  // fresh each page entry
   const ALL=(DATA.all_sessions&&DATA.all_sessions.length)?DATA.all_sessions:(DATA.top_sessions||[]);
+  const idx=(DATA.session_index&&DATA.session_index.by_alias)||{};
+  const byId=Object.fromEntries(ALL.map(s=>[s.id,s]));
+  const resolveSessionId=x=>byId[x]?x:(idx[x]||'');
+  const initialOpen=resolveSessionId(initial.open||'');
+  SS={search:initial.search||'',model:'',outcome:'',flaggedOnly:false,openDays:null,open:initialOpen||null};  // fresh each page entry
   const ratio=(()=>{const co=DATA.cost_composition_top_session,t=Object.values(co).reduce((a,b)=>a+b,0);const o={};for(const k in co)o[k]=co[k]/t;return o;})();
   function compFor(s){return {input:s.cost*ratio.input,output:s.cost*ratio.output,cache_read:s.cost*ratio.cache_read,cache_write:s.cost*ratio.cache_write};}
   const whoLabel=w=>w==='u'?'user':w==='a'?'agent':'tool';
@@ -813,14 +819,15 @@ function sessionTable(){
         </div>
       </div></div></td></tr>`;
   }
-  const norm=q=>q.toLowerCase();
+  const norm=q=>String(q||'').toLowerCase();
+  const searchable=s=>[s.id,s.ref,s.model,s.kind,s.outcome,s.fleet].concat(s.aliases||[]).join(' ');
   function filtered(){
     const q=norm(SS.search);
     return ALL.filter(s=>
       (!SS.flaggedOnly||s.flagged) &&
       (!SS.model||s.model===SS.model) &&
       (!SS.outcome||s.outcome===SS.outcome) &&
-      (!q || (s.id+' '+s.model).toLowerCase().includes(q)));
+      (!q || norm(searchable(s)).includes(q)));
   }
   function groups(){
     const by={};
@@ -843,7 +850,10 @@ function sessionTable(){
     const n=JSON.parse(localStorage.getItem('mu-marks')||'[]').length; ex.textContent='⭳ export marks'+(n?' ('+n+')':''); }
   function render(){
     const gs=groups();
-    if(SS.openDays===null) SS.openDays=new Set(gs.length?[gs[0].day]:[]);  // newest day open by default
+    if(SS.openDays===null){
+      const openDay=SS.open && ALL.find(s=>s.id===SS.open);
+      SS.openDays=new Set(openDay?[openDay.started]:(gs.length?[gs[0].day]:[]));
+    }
     const fltActive=SS.flaggedOnly||SS.model||SS.outcome||SS.search;
     document.getElementById('sess-count').textContent=
       `${n0.format(gs.reduce((a,g)=>a+g.ss.length,0))} sessions · ${gs.length} day${gs.length===1?'':'s'}`+(fltActive?' (filtered)':'');
@@ -855,7 +865,7 @@ function sessionTable(){
       </div>`;}).join('')
       : `<div class="empty" style="padding:26px;text-align:center;color:var(--fg-mute)">No sessions match this filter.</div>`;
     host.querySelectorAll('.day-hdr').forEach(h=>h.addEventListener('click',()=>{const d=h.dataset.day; SS.openDays.has(d)?SS.openDays.delete(d):SS.openDays.add(d); render();}));
-    host.querySelectorAll('tr.main').forEach(tr=>tr.addEventListener('click',e=>{ if(e.target.closest('.markbox'))return; const id=tr.dataset.id; SS.open=SS.open===id?null:id; render();}));
+    host.querySelectorAll('tr.main').forEach(tr=>tr.addEventListener('click',e=>{ if(e.target.closest('.markbox'))return; const id=tr.dataset.id; SS.open=SS.open===id?null:id; if(SS.open) history.replaceState(null,'',sessionHash(SS.open)); render();}));
     host.querySelectorAll('.stars').forEach(sb=>sb.querySelectorAll('.st').forEach(st=>st.addEventListener('click',()=>{const n=+st.dataset.n; sb.querySelectorAll('.st').forEach(x=>x.classList.toggle('on',+x.dataset.n<=n));})));
     host.querySelectorAll('.convo-tools .ct-btn').forEach(btn=>btn.addEventListener('click',()=>{const d=btn.closest('.drill'),op=btn.dataset.act==='expand';d.querySelectorAll('.turn').forEach(t=>t.classList.toggle('open',op));}));
     host.querySelectorAll('.markbox').forEach(mb=>{
@@ -906,15 +916,21 @@ function buildNav(){
     html+=`<a href="#/${p.id}" data-id="${p.id}" ${p.stub?'class="stub-a"':''}><svg viewBox="0 0 24 24">${p.icon}</svg><span class="lbl">${p.title}</span>${p.stub?'<span class="stub">soon</span>':p.mu?'<span class="mo">mu</span>':''}</a>`;});
   m.innerHTML=html;
 }
+function hashState(){
+  const raw=location.hash.replace('#/','')||'overview';
+  const [id,qs='']=raw.split('?');
+  return {id, params:new URLSearchParams(qs)};
+}
+function sessionHash(id){ return '#/sessions?open='+encodeURIComponent(id); }
 function route(){
-  let id=(location.hash.replace('#/','')||'overview'); const p=PAGES.find(x=>x.id===id&&!x.stub);
+  const hs=hashState(); let id=hs.id; const p=PAGES.find(x=>x.id===id&&!x.stub);
   if(!p){ location.hash='#/overview'; return; }
   STATE.page=id;
   document.querySelectorAll('#menu a').forEach(a=>a.classList.toggle('on',a.dataset.id===id));
   document.getElementById('pg-name').textContent=p.title;
   disposeCharts();
   const v=document.getElementById('view'); v.scrollTop=0;
-  p.render(v);
+  p.render(v, hs.params);
 }
 function init(){
   buildNav();

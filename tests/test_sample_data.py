@@ -19,6 +19,7 @@ _CONTRACT_KEYS = {
     "cost_composition_top_session",
     "top_sessions",
     "all_sessions",
+    "session_index",
     "hallucination_by_model",
     "trend_by_day",
     "marks",
@@ -63,6 +64,22 @@ class TestPureFns(unittest.TestCase):
         self.assertTrue(a.startswith("mu·"))
         self.assertEqual(len(a.split("·")[1]), 8)  # 32-bit hex (was 16-bit/4-hex; collided)
         self.assertNotEqual(a, sample_data._short_id("mu", "task-2"))
+
+    def test_row_identity_includes_canonical_and_legacy_aliases(self):
+        rid, ref, aliases = sample_data._row_identity(
+            {
+                "fleet": "mu",
+                "task_id": "d1234567/s1",
+                "daemon": "d1234567",
+                "sid": "s1",
+                "ref": "mu:d1234567:s1",
+            }
+        )
+        self.assertTrue(rid.startswith("mu·"))
+        self.assertEqual(ref, "mu:d1234567:s1")
+        self.assertIn("mu·d123", aliases)
+        self.assertIn("d1234567/s1", aliases)
+        self.assertIn("s1", aliases)
 
     def test_day_format(self):
         self.assertRegex(sample_data._day(1_700_000_000_000), r"^\d{4}-\d{2}-\d{2}$")
@@ -112,6 +129,7 @@ class TestSessionize(unittest.TestCase):
         self.assertEqual(len(out), 1)  # two tasks -> one session
         s = out[0]
         self.assertEqual(s["task_id"], "d1/session-1")  # unique session key
+        self.assertEqual(s["ref"], "mu:d1:session-1")
         self.assertEqual(s["cost"], 3.0)  # summed
         self.assertEqual(s["tools"], 42)  # event-log tool count, not sink sum
         self.assertEqual(s["started_at_unix_ms"], 500)  # event-log start
