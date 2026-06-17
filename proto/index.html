@@ -564,55 +564,55 @@ function renderCost(v){
 
 /* ---------- BEHAVIORAL ---------- */
 function renderBehavioral(v){
-  const q = DATA.flagged_queue||[];
-  const flaggedTotal=(DATA.flagged_queue_total!=null)?DATA.flagged_queue_total:q.length;
-  const hall=(DATA.hallucination_by_model||[]);
-  const hallMax=hall.length?Math.max(...hall.map(r=>r.rate||0)):0;
-  const artifactOutcome=(DATA.outcomes||[]).find(o=>o.outcome==='narrative_no_action');
-  const artifactShare=artifactOutcome&&DATA.all_sessions&&DATA.all_sessions.length?artifactOutcome.sessions/DATA.all_sessions.length:0;
-  const hallDisabled=artifactShare>0.5 && hallMax>0.8;
-  v.innerHTML = pageHead('Behavioral','Degradation and honesty — the core monitoring goal. Negative findings come straight from the event log today; positive (clean-success) discrimination is pending the commit/PR enricher.','both')+`
-    <div class="caveat" style="margin-bottom:16px"><div class="ic">!</div><div class="body"><b>Enrichment pending.</b> The sink collapses ~98.6% of tasks to <span class="mono">narrative_no_action</span> because the classifier runs without commit/PR context. <b>Degradation signals below are real</b> (tool-error loops, DegradedEof, tombstones, self-flags); the positive/negative split firms up once the enricher lands.</div></div>
+  v.innerHTML = pageHead('Behavioral','Review workbench for sessions that deserve attention. This page combines machine, audit, runtime, and manual signals; the classifier-artifact outcome/hallucination summaries are intentionally not shown here.','both')+`
+    <div class="caveat" style="margin-bottom:16px"><div class="ic">!</div><div class="body"><b>Review queue, not verdicts.</b> Rows below are candidate attention signals: degraded stops, tool-error loops, self-flags, deterministic audit findings, telemetry/sentiment residuals, and local low ratings. Open the linked session before treating a row as ground truth.</div></div>
     <div class="grid">
-      <div class="panel col-5"><div class="ph"><div><div class="ttl">Classifier status</div><div class="desc">outcome taxonomy is still enrichment-limited</div></div></div><div style="padding:10px 2px 2px;color:var(--fg-mute);font-size:12px;line-height:1.55"><b class="mono" style="color:var(--amber)">${artifactOutcome?n0.format(artifactOutcome.sessions):0}</b> sessions are <span class="mono">narrative_no_action</span>${artifactShare?` (${pct(artifactShare,1)})`:''}. Do not treat this as a quality distribution yet.</div></div>
-      <div class="panel col-7"><div class="ph"><div><div class="ttl">Degradation over time · with your ratings</div><div class="desc">computed degradation (line) with your sparse manual session-ratings dropped on as points — sparse ground-truth against the workhorse metric</div></div><div class="hint">degradation % · ★ rating</div></div><div class="chart" id="b-trend" style="height:240px"></div></div>
-      <div class="panel col-5"><div class="ph"><div><div class="ttl">Hallucination rate by model</div><div class="desc">disabled while classifier is dominated by narrative_no_action</div></div></div><div id="b-hall-note" style="padding:18px 4px;color:var(--fg-mute);font-size:12px;line-height:1.55">${hallDisabled?'Classifier artifact: current rates are near 100% because <span class="mono">narrative_no_action</span> is counted as hallucination. Use audit/findings and degradation signals instead.':'Classifier appears usable for this corpus; chart rendered below.'}</div><div class="chart" id="b-hall" style="height:${hallDisabled?0:180}px;display:${hallDisabled?'none':'block'}"></div></div>
-      <div class="panel col-7"><div class="ph"><div><div class="ttl">Flagged for review</div><div class="desc">low-confidence + tombstoned + self-flagged sessions — the queue worth a human look${STATE.fleet!=='both'?' · highlight '+fleetName(STATE.fleet):''}</div></div><div class="hint">showing ${q.length}${flaggedTotal!==q.length?' of '+flaggedTotal:''}</div></div>
-        <div class="queue" id="b-queue"></div></div>
-      <div class="panel col-7"><div class="ph"><div><div class="ttl">Telemetry → operator-sentiment probe</div><div class="desc">HistGradientBoosting predicts signed sentiment (pos−neg per 100 msg) from telemetry only; the residual tails flag where telemetry and the operator disagree</div></div><div class="hint" id="b-probe-skill"></div></div>
-        <div id="b-probe" style="margin-top:8px"></div></div>
-      <div class="panel col-5"><div class="ph"><div><div class="ttl">mu-audit process findings</div><div class="desc">deterministic process-layer auditors (mu audit) over the event log</div></div><div class="hint">${(DATA.audit_findings||[]).length>12?'showing 12 of ':''}${(DATA.audit_findings||[]).length} findings</div></div>
-        <div id="b-audit" style="margin-top:8px"></div></div>
+      <div class="panel col-12"><div class="ph" style="align-items:center;gap:12px;flex-wrap:wrap"><div><div class="ttl">Attention queue</div><div class="desc" id="bq-count">sessions and findings that need human review</div></div><div class="tbl-tools"><select id="bq-source" class="fin"><option value="">all signals</option><option value="runtime">runtime</option><option value="audit">audit</option><option value="ml">ml residual</option><option value="mark">manual mark</option></select><select id="bq-sev" class="fin"><option value="">all severity</option><option value="high">high</option><option value="med">medium</option><option value="low">low</option></select></div></div><div class="queue" id="b-workbench"></div></div>
+      <div class="panel col-7"><div class="ph"><div><div class="ttl">Degradation over time · with your ratings</div><div class="desc">computed stop-reason degradation with sparse manual session-ratings dropped on as points</div></div><div class="hint">degradation % · ★ rating</div></div><div class="chart" id="b-trend" style="height:240px"></div></div>
+      <div class="panel col-5"><div class="ph"><div><div class="ttl">Signal mix</div><div class="desc">why rows entered the queue</div></div><div class="hint" id="b-signal-h">—</div></div><div class="chart" id="b-signals" style="height:240px"></div></div>
+      <div class="panel col-7"><div class="ph"><div><div class="ttl">Telemetry → operator-sentiment probe</div><div class="desc">residual tails where telemetry and operator sentiment disagree</div></div><div class="hint" id="b-probe-skill"></div></div><div id="b-probe" style="margin-top:8px"></div></div>
+      <div class="panel col-5"><div class="ph"><div><div class="ttl">mu-audit process findings</div><div class="desc">deterministic process-layer auditors (mu audit) over the event log</div></div><div class="hint">${(DATA.audit_findings||[]).length} findings</div></div><div id="b-audit" style="margin-top:8px"></div></div>
     </div>`;
   degTrend('b-trend');
-  if(!hallDisabled) barH('b-hall', hall.slice().sort((a,b)=>a.rate-b.rate).map(r=>({label:r.model.replace('google/','').replace('claude-',''),val:r.rate,color:FLEET_COLOR[r.fleet],pctMode:true,sub:fleetName(r.fleet),dim:emph(r.fleet)})), 12);
-  const qe=document.getElementById('b-queue');
-  qe.innerHTML = q.length? q.map(x=>`<div class="qrow" style="${rowDim(x.fleet)?'opacity:.3':''}">
-      <div class="qi" style="background:${x.reason==='err'||x.reason==='deg'?'var(--amber-soft)':x.reason==='tomb'?'rgba(154,134,196,0.12)':'rgba(125,147,201,0.12)'};color:${x.reason==='tomb'?'var(--violet)':x.reason==='callout'?'var(--blue)':'var(--amber)'}">⚑</div>
-      <div class="qmain"><div class="qt">${x.id} · <span class="dim">${x.model.replace('claude-','')}</span></div><div class="qs">${x.why}</div></div>
-      <span class="reason ${x.reason}">${x.reason==='deg'?'degraded':x.reason==='err'?'error-loop':x.reason==='tomb'?'poisoned':'self-flag'}</span>
-      <div class="qconf">${x.conf}</div></div>`).join('') : `<div class="empty" style="padding:24px;color:var(--fg-mute);text-align:center">No flagged sessions for this fleet.</div>`;
-  // ML-degradation probe + mu-audit findings (folded from degradation.py + audit_sweep.py)
-  (function(){
-    const P=DATA.degradation_probe||{};
-    const sk=document.getElementById('b-probe-skill');
-    if(sk) sk.textContent = (P.r2!=null) ? `R² ${P.r2} · MAE ${P.mae} · ${P.n_interactive||0} sessions` : 'no probe data';
-    const host=document.getElementById('b-probe');
-    if(host){
-      const imp=(P.importances||[]).slice(0,6).map(t=>`<span class="chip">${t[0]} <b>${t[1]}</b></span>`).join(' ');
-      const tbl=(rows,col)=>(rows&&rows.length)?`<table class="sess"><tbody>`+rows.slice(0,6).map(w=>`<tr class="main">
-          <td><span class="mono" style="font-size:11px">${(w.ref||'').slice(0,30)}</span></td>
-          <td class="r dim">obs ${w.obs}</td><td class="r dim">pred ${w.pred}</td>
-          <td class="r" style="color:${col}">Δ${w.resid}</td></tr>`).join('')+`</tbody></table>`:`<div class="empty" style="padding:10px;color:var(--fg-mute)">none</div>`;
-      host.innerHTML = `<div style="margin-bottom:10px">${imp||'<span class="dim">no importances</span>'}</div>
-        <div class="dim" style="font-size:11px;margin-bottom:3px">telemetry rosier than the operator felt — candidate unnoticed-degraded</div>${tbl(P.unnoticed,'var(--amber)')}
-        <div class="dim" style="font-size:11px;margin:10px 0 3px">operator warmer than telemetry predicts</div>${tbl(P.task_frust,'var(--accent)')}`;
-    }
-    const ah=document.getElementById('b-audit'); const A=DATA.audit_findings||[];
-    if(ah) ah.innerHTML = A.length? A.slice(0,12).map(f=>`<div class="qrow"><div class="qi" style="background:var(--amber-soft);color:var(--amber)">⚠</div>
-        <div class="qmain"><div class="qt"><a class="mono" style="font-size:11px" href="${sessionHash(f.session_id||f.ref||'')}">${(f.ref||'').slice(0,26)}</a> · <span class="dim">${f.invariant}</span></div><div class="qs">${(f.detail||'').slice(0,90)}</div></div>
-        <span class="reason deg">${f.severity}</span></div>`).join('') : `<div class="empty" style="padding:24px;color:var(--fg-mute);text-align:center">no findings recorded</div>`;
-  })();
+  const P=DATA.degradation_probe||{}, A=DATA.audit_findings||[], F=DATA.flagged_queue||[];
+  const sevRank={high:0,med:1,low:2};
+  const normSev=x=>{x=String(x||'').toLowerCase(); return x==='critical'||x==='error'||x==='deg'||x==='err'?'high':(x==='warn'||x==='warning'||x==='medium'?'med':'low');};
+  const refId=r=>r.session_id||r.id||r.ref||'';
+  function row(source, sev, ref, title, detail, meta, fleet='mu'){
+    return {source, sev:normSev(sev), ref, title, detail, meta, fleet, id:refId({session_id:ref})};
+  }
+  const rows=[];
+  F.forEach(x=>rows.push(row('runtime', x.reason, x.session_id||x.id, `${x.id} · ${x.model||'—'}`, x.why||'', x.reason==='deg'?'degraded stop':x.reason==='err'?'tool/error loop':x.reason==='callout'?'self-flag':'runtime', x.fleet)));
+  A.forEach(f=>rows.push(row('audit', f.severity, f.session_id||f.ref, `${(f.ref||'').slice(0,26)} · ${f.invariant||'audit'}`, f.detail||'', f.severity||'finding')));
+  (P.unnoticed||[]).forEach(w=>rows.push(row('ml','med', w.session_id||w.ref, `${(w.ref||'').slice(0,26)} · telemetry rosy`, `observed ${w.obs}; predicted ${w.pred}; residual ${w.resid}`, 'candidate unnoticed-degraded')));
+  (P.task_frust||[]).forEach(w=>rows.push(row('ml','low', w.session_id||w.ref, `${(w.ref||'').slice(0,26)} · operator warmer`, `observed ${w.obs}; predicted ${w.pred}; residual ${w.resid}`, 'telemetry pessimistic')));
+  let marks=[]; try{marks=JSON.parse(localStorage.getItem('mu-marks')||'[]');}catch(e){marks=[];}
+  marks.filter(m=>+m.rating && +m.rating<=2).forEach(m=>rows.push(row('mark','high', m.id||m.task_id, `${m.id||m.task_id} · ${m.rating}★ local mark`, m.note||'', 'manual low rating')));
+  rows.sort((a,b)=>(sevRank[a.sev]-sevRank[b.sev]) || String(a.source).localeCompare(b.source));
+  const wb=document.getElementById('b-workbench'), cnt=document.getElementById('bq-count'), fs=document.getElementById('bq-source'), fv=document.getElementById('bq-sev');
+  function renderQueue(){
+    const src=fs.value, sev=fv.value;
+    const shown=rows.filter(r=>(!src||r.source===src)&&(!sev||r.sev===sev));
+    cnt.textContent=`${shown.length} shown · ${rows.length} total signals`;
+    wb.innerHTML = shown.length ? shown.slice(0,60).map(r=>`<div class="qrow" style="${rowDim(r.fleet)?'opacity:.35':''}">
+      <div class="qi" style="background:${r.sev==='high'?'var(--amber-soft)':'rgba(125,147,201,0.12)'};color:${r.sev==='high'?'var(--amber)':'var(--blue)'}">${r.source==='audit'?'⚠':r.source==='mark'?'★':r.source==='ml'?'Δ':'⚑'}</div>
+      <div class="qmain"><div class="qt"><a class="mono" style="font-size:11px" href="${sessionHash(r.ref)}">${esc(r.title)}</a></div><div class="qs">${esc(r.detail).slice(0,140)}</div></div>
+      <span class="reason ${r.sev==='high'?'err':r.sev==='med'?'deg':'callout'}">${r.source}</span><div class="qconf">${r.meta}</div></div>`).join('') : `<div class="empty" style="padding:24px;color:var(--fg-mute);text-align:center">No rows match this filter.</div>`;
+  }
+  fs.addEventListener('change',renderQueue); fv.addEventListener('change',renderQueue); renderQueue();
+  const mix={}; rows.forEach(r=>{mix[r.source]=(mix[r.source]||0)+1;});
+  document.getElementById('b-signal-h').textContent=`${rows.length} total signals`;
+  barH('b-signals', Object.entries(mix).map(([label,val])=>({label,val,color:label==='audit'?amber():label==='ml'?accent():label==='mark'?cssVar('--violet'):blue(),raw:true})).sort((a,b)=>a.val-b.val), 12);
+  const sk=document.getElementById('b-probe-skill');
+  if(sk) sk.textContent = (P.r2!=null) ? `R² ${P.r2} · MAE ${P.mae} · ${P.n_interactive||0} sessions` : 'no probe data';
+  const host=document.getElementById('b-probe');
+  if(host){
+    const imp=(P.importances||[]).slice(0,6).map(t=>`<span class="chip">${t[0]} <b>${t[1]}</b></span>`).join(' ');
+    const tbl=(rs,col)=>(rs&&rs.length)?`<table class="sess"><tbody>`+rs.slice(0,6).map(w=>`<tr class="main"><td><a class="mono" style="font-size:11px" href="${sessionHash(w.session_id||w.ref||'')}">${(w.ref||'').slice(0,30)}</a></td><td class="r dim">obs ${w.obs}</td><td class="r dim">pred ${w.pred}</td><td class="r" style="color:${col}">Δ${w.resid}</td></tr>`).join('')+`</tbody></table>`:`<div class="empty" style="padding:10px;color:var(--fg-mute)">none</div>`;
+    host.innerHTML = `<div style="margin-bottom:10px">${imp||'<span class="dim">no importances</span>'}</div><div class="dim" style="font-size:11px;margin-bottom:3px">telemetry rosier than the operator felt</div>${tbl(P.unnoticed,'var(--amber)')}<div class="dim" style="font-size:11px;margin:10px 0 3px">operator warmer than telemetry predicts</div>${tbl(P.task_frust,'var(--accent)')}`;
+  }
+  const ah=document.getElementById('b-audit');
+  if(ah) ah.innerHTML = A.length? A.slice(0,12).map(f=>`<div class="qrow"><div class="qi" style="background:var(--amber-soft);color:var(--amber)">⚠</div><div class="qmain"><div class="qt"><a class="mono" style="font-size:11px" href="${sessionHash(f.session_id||f.ref||'')}">${(f.ref||'').slice(0,26)}</a> · <span class="dim">${f.invariant}</span></div><div class="qs">${(f.detail||'').slice(0,90)}</div></div><span class="reason deg">${f.severity}</span></div>`).join('') : `<div class="empty" style="padding:24px;color:var(--fg-mute);text-align:center">no findings recorded</div>`;
 }
 
 /* ---------- INTERNAL-OPS ---------- */
