@@ -56,9 +56,13 @@ def _demo_sessions():
     out = []
     for i in range(30):
         f, m, k = models[i % len(models)]
+        display_id = f"{f}·{i:03d}"
+        ref = f"{f}:demo-{i:03d}"
         out.append(
             {
-                "id": f"{f}·{i:03d}",
+                "id": display_id,
+                "ref": ref,
+                "aliases": [display_id, ref, f"demo-{i:03d}"],
                 "fleet": f,
                 "model": m,
                 "kind": k,
@@ -252,6 +256,10 @@ def build():
             },
         ],
         "all_sessions": _demo_sessions(),
+        "session_index": {
+            "by_display_id": {s["id"]: s.get("ref", s["id"]) for s in _demo_sessions()},
+            "by_alias": {a: s["id"] for s in _demo_sessions() for a in s.get("aliases", [])},
+        },
         "hallucination_by_model": [
             {"fleet": "cc", "model": "claude-opus-4-8", "rate": 0.061, "sessions": 712},
             {"fleet": "cc", "model": "claude-sonnet-4-6", "rate": 0.142, "sessions": 360},
@@ -273,7 +281,8 @@ def build():
         "flagged_queue_total": 5,
         "flagged_queue": [
             {
-                "id": "mu·44a1",
+                "id": "mu·000",
+                "session_id": "mu·000",
                 "fleet": "mu",
                 "model": "claude-opus-4-8",
                 "reason": "deg",

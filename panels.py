@@ -287,38 +287,38 @@ def flagged_queue(con, limit=12):
     rows = con.execute(
         """
         WITH tel AS (
-            SELECT daemon,
+            SELECT daemon, session_id AS sid,
                    arg_max(json_extract_string(payload,'$.model'), ts) AS model
-            FROM ev WHERE kind='task_telemetry' GROUP BY daemon
+            FROM ev WHERE kind='task_telemetry' GROUP BY daemon, session_id
         ),
         flags AS (
-            SELECT daemon, 'deg' AS reason,
+            SELECT daemon, session_id AS sid, 'deg' AS reason,
                    'stop_reason='||json_extract_string(payload,'$.stop_reason')||' mid-task' AS why
             FROM ev WHERE kind='done'
               AND json_extract_string(payload,'$.stop_reason') IN
                   ('degraded_eof','max_tokens','iteration_cap','aborted')
             UNION ALL
-            SELECT daemon, 'err',
+            SELECT daemon, session_id AS sid, 'err',
                    'exit_reason='||json_extract_string(payload,'$.exit_reason')
             FROM ev WHERE kind='task_telemetry'
               AND json_extract_string(payload,'$.exit_reason') IN ('error','cancelled')
             UNION ALL
-            SELECT daemon, 'err', (cnt::VARCHAR)||' tool_result.is_error in session'
-            FROM (SELECT daemon, count(*) AS cnt FROM ev
+            SELECT daemon, session_id AS sid, 'err', (cnt::VARCHAR)||' tool_result.is_error in session'
+            FROM (SELECT daemon, session_id, count(*) AS cnt FROM ev
                   WHERE kind='tool_result' AND json_extract(payload,'$.is_error')::BOOLEAN
-                  GROUP BY daemon HAVING count(*) >= 5)
+                  GROUP BY daemon, session_id HAVING count(*) >= 5)
             UNION ALL
-            SELECT daemon, 'callout',
+            SELECT daemon, session_id AS sid, 'callout',
                    'self-flag: '||COALESCE(json_extract_string(payload,'$.title'),'(callout)')
             FROM ev WHERE kind='callout'
             UNION ALL
-            SELECT daemon, 'deg',
+            SELECT daemon, session_id AS sid, 'deg',
                    'autonomous_terminated: '||COALESCE(json_extract_string(payload,'$.reason'),'?')
             FROM ev WHERE kind='autonomous_terminated'
         )
-        SELECT f.daemon, f.reason, any_value(f.why) AS why, any_value(t.model) AS model
-        FROM flags f LEFT JOIN tel t USING (daemon)
-        GROUP BY f.daemon, f.reason
+        SELECT f.daemon, f.sid, f.reason, any_value(f.why) AS why, any_value(t.model) AS model
+        FROM flags f LEFT JOIN tel t ON t.daemon=f.daemon AND t.sid=f.sid
+        GROUP BY f.daemon, f.sid, f.reason
         """
     ).fetchall()
     # round-robin across reason types so the queue shows variety, severest first
@@ -326,7 +326,7 @@ def flagged_queue(con, limit=12):
 
     buckets = defaultdict(list)
     for r in rows:
-        buckets[r[1]].append(r)
+        buckets[r[2]].append(r)
     order = sorted(buckets, key=lambda k: _SEVERITY.get(k, 9))
     interleaved = []
     while len(interleaved) < limit and any(buckets[k] for k in order):
@@ -336,10 +336,13 @@ def flagged_queue(con, limit=12):
                 if len(interleaved) >= limit:
                     break
     out = []
-    for daemon, reason, why, model in interleaved:
+    for daemon, sid, reason, why, model in interleaved:
+        key = f"{daemon}/{sid}" if sid else daemon
         out.append(
             {
                 "id": "mu·" + daemon[:4],
+                "session_id": _short_id("mu", key),
+                "session_ref": f"mu:{daemon}:{sid}" if sid else f"mu:{daemon}",
                 "fleet": "mu",
                 "model": model or "—",
                 "reason": reason,
@@ -394,6 +397,7 @@ def delegations(con):
     posted = consumed = 0
     for (fleet, session), e in sess.items():
         ref = f"{fleet}:{session}"
+        display_id = _short_id("mu", session) if fleet == "mu" else _short_id(fleet, session)
         posted += e["posted"]
         consumed += e["consumed"]
         for k, n in e["mk"].items():
@@ -414,6 +418,7 @@ def delegations(con):
             workers.append(
                 {
                     "session_ref": ref,
+                    "session_id": display_id,
                     "pot": sp.get("pot_name", ""),
                     "model": sp.get("model") or "unknown",
                     "prompt": (sp.get("prompt_summary") or "")[:140],
