@@ -498,6 +498,7 @@ function renderCost(v){
   const ce=DATA.cache_econ||{};
   const med=+(ce.median_gap_min||0), p90=+(ce.p90_gap_min||0), saveP90=+(ce.save_pct_p90||0);
   const w5=ce.w5_tokens||0, w1=ce.w1_tokens||0, oneHr=(w5+w1)?Math.round(w1/(w5+w1)*100):0;
+  const exp5=ce.expired_5m_count||0, near5=ce.near_miss_4_6m_count||0, gapsN=ce.gap_count||0;
   const perAskAll=(DATA.per_ask_sessions||[]).flatMap(s=>s.asks.map(a=>a.cost)).sort((a,b)=>a-b);
   const perAskMed=perAskAll.length?perAskAll[Math.floor(perAskAll.length/2)]:0;
   const co=DATA.cost_composition_top_session||{}, ctot=Object.values(co).reduce((a,b)=>a+b,0)||1;
@@ -506,13 +507,15 @@ function renderCost(v){
   const crShare=Math.round((co.cache_read||0)/ctot*100);
 
   v.innerHTML = pageHead('Cost &amp; Cache','Where the dollars go, and the cache-tier economics that move them. Interactive — the cache model uses live config multipliers.','both')+`
-    <div class="kpis k3">
+    <div class="kpis k4">
       <div class="kpi"><div class="top"><div class="name">Per-ask · median</div><div class="tag">rate-equiv</div></div><div class="big"><span class="cur">$</span>${money(perAskMed).replace('$','')}</div><div class="meta">median across sampled sessions</div></div>
       <div class="kpi accent"><div class="top"><div class="name">1h-cache adoption</div><div class="tag">of writes</div></div><div class="big">${oneHr}<span class="cur">%</span></div><div class="meta">already on 1h · saves ${saveP90.toFixed(0)}% at the p90 ${p90.toFixed(1)}min gap</div></div>
+      <div class="kpi warn"><div class="top"><div class="name">5m expiries</div><div class="tag">ask gaps</div></div><div class="big">${n0.format(exp5)}</div><div class="meta">${n0.format(near5)} near 4–6m · ${n0.format(gapsN)} measured gaps</div></div>
       <div class="kpi warn"><div class="top"><div class="name">Cache-read share</div><div class="tag">highest-cost session</div></div><div class="big">${crShare}<span class="cur">%</span></div><div class="meta">input + output are rounding error</div></div>
+
     </div>
     <div class="grid">
-      <div class="panel col-7"><div class="ph"><div><div class="ttl">Cache economics · 5-minute vs 1-hour</div><div class="desc">session cost as think-time between asks grows. When the 5-min window lapses, the next ask re-writes (1.25×) instead of riding a cheap read (0.10×) — that's the jump. 1h pays 2.0× once but survives the gap.</div></div><div class="hint">$/session · 40 asks</div></div><div class="chart" id="cc-cache" style="height:280px"></div></div>
+      <div class="panel col-7"><div class="ph"><div><div class="ttl">Cache economics · 5-minute vs 1-hour</div><div class="desc">session cost as think-time between asks grows. When the 5-min window lapses, the next ask re-writes (1.25×) instead of riding a cheap read (0.10×) — that's the jump. Live corpus: ${n0.format(exp5)} measured ask gaps exceeded 5m; ${n0.format(near5)} sat on the 4–6m edge.</div></div><div class="hint">$/session · 40 asks</div></div><div class="chart" id="cc-cache" style="height:280px"></div></div>
       <div class="panel col-5"><div class="ph" style="align-items:center"><div><div class="ttl">Per-ask cost · <span id="pa-title">session</span></div><div class="desc">cost of each turn; <b style="color:var(--amber)">amber</b> = ask paid a cache write, <b style="color:var(--accent)">teal</b> = rode a cached read</div></div><select id="perask-sel" style="background:var(--panel-2);color:var(--fg);border:1px solid var(--border);border-radius:7px;padding:4px 8px;font-family:var(--mono);font-size:11px;max-width:200px"></select></div><div class="chart" id="cc-perask" style="height:264px"></div></div>
       <div class="panel col-5"><div class="ph"><div><div class="ttl">Cost composition · highest-cost session</div><div class="desc"><span class="mono">${esc(topCostLabel)}</span></div></div><div class="hint" id="cc-comp-h">—</div></div><div class="chart" id="cc-comp" style="height:170px"></div></div>
       <div class="panel col-7"><div class="ph"><div><div class="ttl">Cost by kind</div><div class="desc">notional (subscription) vs paid vs free — the money distinction</div></div><div class="hint">rate-equiv $</div></div><div class="chart" id="cc-kind" style="height:170px"></div>
@@ -547,10 +550,10 @@ function renderCost(v){
       if(chart){try{chart.dispose();}catch(e){}}
       chart=mk('cc-perask');
       chart.setOption({grid:{left:8,right:14,top:14,bottom:42,containLabel:true},
-        tooltip:{...baseTooltip(),trigger:'axis',axisPointer:{type:'shadow'},formatter:p=>{const a=s.asks[p[0].dataIndex];return `ask <b>#${a.i}</b><br/>${money(a.cost)}<br/><span style="color:${a.rewrite_5m?'#d6a14e':'#33c9a3'}">${a.rewrite_5m?'cache write':'cached read'}</span>`;}},
+        tooltip:{...baseTooltip(),trigger:'axis',axisPointer:{type:'shadow'},formatter:p=>{const a=s.asks[p[0].dataIndex];return `ask <b>#${a.i}</b><br/>${money(a.cost)}<br/>gap: ${a.gap_min==null?'first ask':a.gap_min+'m'}<br/><span style="color:${a.expired_5m||a.rewrite_5m?'#d6a14e':'#33c9a3'}">${a.expired_5m?'5m cache expired':(a.rewrite_5m?'cache write':'cached read')}</span>`;}},
         xAxis:{type:'category',data:s.asks.map(a=>a.i),name:'ask # · turn order in session',nameLocation:'middle',nameGap:26,nameTextStyle:{color:fgmute(),fontSize:10.5},axisLine:{lineStyle:{color:GRID}},axisTick:{show:false},axisLabel:{color:fgmute(),fontFamily:"'JetBrains Mono',monospace",fontSize:9,interval:3}},
         yAxis:{type:'value',axisLabel:{color:fgmute(),fontFamily:"'JetBrains Mono',monospace",fontSize:10,formatter:v=>'$'+v},splitLine:{lineStyle:{color:GRID}},axisLine:{show:false},axisTick:{show:false}},
-        series:[{type:'bar',data:s.asks.map(a=>({value:a.cost,itemStyle:{color:a.rewrite_5m?amber():accent(),borderRadius:[3,3,0,0]}})),barWidth:'62%'}]});
+        series:[{type:'bar',data:s.asks.map(a=>({value:a.cost,itemStyle:{color:(a.expired_5m||a.rewrite_5m)?amber():accent(),borderRadius:[3,3,0,0]}})),barWidth:'62%'}]});
     }
     draw(0);
     sel.addEventListener('change',()=>draw(+sel.value));
