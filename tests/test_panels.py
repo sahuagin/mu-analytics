@@ -24,6 +24,10 @@ class TestPanels(unittest.TestCase):
             {"bash": 1, "read": 1},
         )
 
+    def test_tool_name_normalization(self):
+        self.assertEqual(panels._normalize_tool_name("Read"), "read")
+        self.assertEqual(panels._normalize_tool_name("str-replace-editor"), "edit")
+
     def test_recall(self):
         rc = {r["source"]: r["tokens"] for r in panels.recall(self.con)}
         self.assertEqual(rc["ProjectFile"], 5678)
@@ -55,7 +59,16 @@ class TestPanels(unittest.TestCase):
         ce = panels.cache_econ(self.con)
         self.assertEqual(ce["w5_tokens"], 500)
         self.assertEqual(ce["w1_tokens"], 1500)
-        for k in ("median_gap_min", "p90_gap_min", "save_pct", "save_pct_p90"):
+        for k in (
+            "median_gap_min",
+            "p90_gap_min",
+            "save_pct",
+            "save_pct_p90",
+            "gap_count",
+            "expired_5m_count",
+            "near_miss_4_6m_count",
+            "over_60m_count",
+        ):
             self.assertIn(k, ce)
 
     def test_per_ask(self):
@@ -65,6 +78,8 @@ class TestPanels(unittest.TestCase):
         ask = pa["asks"][0]
         self.assertGreater(ask["cost"], 0)
         self.assertTrue(ask["rewrite_5m"])  # cache_creation 2000 > 0
+        self.assertIn("gap_min", ask)
+        self.assertIn("expired_5m", ask)
 
     def test_flagged_queue(self):
         q = panels.flagged_queue(self.con)

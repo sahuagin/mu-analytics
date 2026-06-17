@@ -26,17 +26,44 @@ _SRC_LABEL = {
 _COMPACTION_ACTIONS = ("kept", "dropped", "summarized", "failed")
 
 
+def _normalize_tool_name(name):
+    """Normalize superficial tool spelling so the mix is comparable by fleet."""
+    t = (name or "unknown").strip()
+    low = t.lower().replace(" ", "_").replace("-", "_")
+    aliases = {
+        "read": "read",
+        "file_read": "read",
+        "bash": "bash",
+        "shell": "bash",
+        "edit": "edit",
+        "str_replace_editor": "edit",
+        "write": "write",
+        "grep": "grep",
+        "rg": "grep",
+        "glob": "glob",
+        "webfetch": "web_fetch",
+        "web_fetch": "web_fetch",
+    }
+    return aliases.get(low, low)
+
+
 def tool_mix(con, limit=12):
-    """tool_call name distribution -> [{tool, count}]."""
+    """tool_call distribution normalized by tool name and split by fleet."""
     rows = con.execute(
         """
-        SELECT json_extract_string(payload,'$.name') AS tool, count(*) AS count
+        SELECT fleet, json_extract_string(payload,'$.name') AS tool, count(*) AS count
         FROM ev WHERE kind='tool_call' AND json_extract_string(payload,'$.name') IS NOT NULL
-        GROUP BY 1 ORDER BY count DESC LIMIT ?
-        """,
-        [limit],
+        GROUP BY 1,2 ORDER BY count DESC
+        """
     ).fetchall()
-    return [{"tool": t, "count": int(c)} for t, c in rows]
+    by_tool = {}
+    for fleet, tool, count in rows:
+        key = _normalize_tool_name(tool)
+        rec = by_tool.setdefault(key, {"tool": key, "count": 0, "mu": 0, "cc": 0})
+        rec["count"] += int(count)
+        if fleet in ("mu", "cc"):
+            rec[fleet] += int(count)
+    return sorted(by_tool.values(), key=lambda r: (-r["count"], r["tool"]))[:limit]
 
 
 def recall(con):
@@ -464,11 +491,16 @@ def cache_econ(con):
     gp = con.execute(
         """
         WITH gaps AS (
-            SELECT (ts - lag(ts) OVER (PARTITION BY daemon ORDER BY ts)) / 60000.0 AS gm
+            SELECT (ts - lag(ts) OVER (PARTITION BY fleet, daemon, session_id ORDER BY ts))
+                     / 60000.0 AS gm
             FROM ev WHERE kind='assistant_message_event'
         )
         SELECT median(gm) FILTER (WHERE gm BETWEEN 0 AND 120),
-               quantile_cont(gm, 0.9) FILTER (WHERE gm BETWEEN 0 AND 120)
+               quantile_cont(gm, 0.9) FILTER (WHERE gm BETWEEN 0 AND 120),
+               count(*) FILTER (WHERE gm BETWEEN 0 AND 120),
+               count(*) FILTER (WHERE gm > 5 AND gm <= 60),
+               count(*) FILTER (WHERE gm BETWEEN 4 AND 6),
+               count(*) FILTER (WHERE gm > 60)
         FROM gaps
         """
     ).fetchone()
@@ -495,6 +527,10 @@ def cache_econ(con):
         "p90_gap_min": p90_gap,
         "save_pct": save_at(median_gap),  # honest: small when turns are fast
         "save_pct_p90": save_at(p90_gap),  # where 1h actually starts to pay
+        "gap_count": int(gp[2] or 0),
+        "expired_5m_count": int(gp[3] or 0),
+        "near_miss_4_6m_count": int(gp[4] or 0),
+        "over_60m_count": int(gp[5] or 0),
         "w5_tokens": int(vol[0]),
         "w1_tokens": int(vol[1]),
         "read_tokens": int(vol[2]),
@@ -502,42 +538,67 @@ def cache_econ(con):
 
 
 # --- per-ask cost for one session (real turns) ---
-def per_ask(con, daemon=None, limit=28):
-    """Per-turn cost within a session; amber = a turn that paid a cache write."""
+def per_ask(con, daemon=None, session_id=None, limit=28):
+    """Per-turn cost within a session; amber = a turn that paid a cache write.
+
+    Also carries `gap_min` and `expired_5m`, so the UI can show whether a turn
+    probably rewrote because the previous ask fell outside the 5-minute cache TTL.
+    """
     if daemon is None:
         row = con.execute(
-            "SELECT daemon FROM ev WHERE kind='assistant_message_event' "
-            "GROUP BY daemon HAVING count(*) BETWEEN 12 AND 60 ORDER BY count(*) DESC LIMIT 1"
+            """
+            SELECT daemon, session_id FROM ev WHERE kind='assistant_message_event'
+            GROUP BY daemon, session_id HAVING count(*) BETWEEN 12 AND 60
+            ORDER BY count(*) DESC LIMIT 1
+            """
         ).fetchone()
         if not row:  # small corpus: fall back to the busiest assistant session
             row = con.execute(
-                "SELECT daemon FROM ev WHERE kind='assistant_message_event' "
-                "GROUP BY daemon ORDER BY count(*) DESC LIMIT 1"
+                """
+                SELECT daemon, session_id FROM ev WHERE kind='assistant_message_event'
+                GROUP BY daemon, session_id ORDER BY count(*) DESC LIMIT 1
+                """
             ).fetchone()
-        daemon = row[0] if row else None
+        daemon, session_id = row if row else (None, None)
     model = _daemon_model(con, daemon)
     rr = RATES.get(rate_key(model)) or RATES["claude-opus-4-8"]
     rows = con.execute(
         """
-        SELECT json_extract(payload,'$.message.usage.input_tokens')::BIGINT AS inp,
-               json_extract(payload,'$.message.usage.output_tokens')::BIGINT AS out,
-               COALESCE(json_extract(payload,'$.message.usage.cache_read_input_tokens')::BIGINT,0) AS cr,
-               COALESCE(json_extract(payload,'$.message.usage.cache_creation_input_tokens')::BIGINT,0) AS cw
-        FROM ev WHERE kind='assistant_message_event' AND daemon = ?
-        ORDER BY ts LIMIT ?
+        WITH turns AS (
+            SELECT ts, session_id,
+                   json_extract(payload,'$.message.usage.input_tokens')::BIGINT AS inp,
+                   json_extract(payload,'$.message.usage.output_tokens')::BIGINT AS out,
+                   COALESCE(json_extract(payload,'$.message.usage.cache_read_input_tokens')::BIGINT,0) AS cr,
+                   COALESCE(json_extract(payload,'$.message.usage.cache_creation_input_tokens')::BIGINT,0) AS cw,
+                   (ts - lag(ts) OVER (PARTITION BY daemon, session_id ORDER BY ts)) / 60000.0 AS gap_min
+            FROM ev WHERE kind='assistant_message_event' AND daemon = ?
+              AND (? IS NULL OR session_id = ?)
+        )
+        SELECT session_id, inp, out, cr, cw, gap_min FROM turns ORDER BY ts LIMIT ?
         """,
-        [daemon, limit],
+        [daemon, session_id, session_id, limit],
     ).fetchall()
     out = []
-    for i, (inp, o, cr, cw) in enumerate(rows, 1):
+    actual_sid = session_id
+    for i, (sid, inp, o, cr, cw, gap_min) in enumerate(rows, 1):
+        actual_sid = actual_sid or sid
         cost = (
             (inp or 0) * rr["input"]
             + (cr or 0) * rr["input"] * MULT["read"]
             + (cw or 0) * rr["input"] * MULT["write_5m"]
             + (o or 0) * rr["output"]
         ) / 1e6
-        out.append({"i": i, "cost": round(cost, 4), "rewrite_5m": bool(cw)})
-    return {"daemon": daemon, "model": model, "asks": out}
+        gap = round(gap_min, 2) if gap_min is not None else None
+        out.append(
+            {
+                "i": i,
+                "cost": round(cost, 4),
+                "rewrite_5m": bool(cw),
+                "gap_min": gap,
+                "expired_5m": bool(gap is not None and gap > 5),
+            }
+        )
+    return {"daemon": daemon, "session_id": actual_sid, "model": model, "asks": out}
 
 
 def per_ask_sessions(con, n=12, asks_limit=30):
@@ -547,29 +608,37 @@ def per_ask_sessions(con, n=12, asks_limit=30):
     cand = con.execute(
         """
         WITH am AS (
-            SELECT daemon, count(*) AS n,
-                   sum(COALESCE(json_extract(payload,'$.message.usage.cache_creation_input_tokens')::BIGINT,0)) AS cwsum
-            FROM ev WHERE kind='assistant_message_event' GROUP BY daemon
+            SELECT daemon, session_id, count(*) AS n,
+                   sum(COALESCE(json_extract(payload,'$.message.usage.cache_creation_input_tokens')::BIGINT,0)) AS cwsum,
+                   max(ts) AS last_ts
+            FROM ev WHERE kind='assistant_message_event' GROUP BY daemon, session_id
         ),
         tel AS (
-            SELECT daemon, arg_max(json_extract_string(payload,'$.model'), ts) AS model
-            FROM ev WHERE kind='task_telemetry' GROUP BY daemon
+            SELECT daemon, session_id, arg_max(json_extract_string(payload,'$.model'), ts) AS model
+            FROM ev WHERE kind='task_telemetry' GROUP BY daemon, session_id
         )
-        SELECT am.daemon, tel.model
-        FROM am LEFT JOIN tel USING (daemon)
+        SELECT am.daemon, am.session_id, tel.model, am.last_ts
+        FROM am LEFT JOIN tel USING (daemon, session_id)
         WHERE am.n BETWEEN 4 AND 60
         ORDER BY (tel.model LIKE 'claude-%') DESC, am.cwsum DESC, am.n DESC
         LIMIT 40
         """
     ).fetchall()
     out = []
-    for daemon, model in cand:
-        pa = per_ask(con, daemon=daemon, limit=asks_limit)
+    for daemon, sid, model, last_ts in cand:
+        pa = per_ask(con, daemon=daemon, session_id=sid, limit=asks_limit)
         total = round(sum(a["cost"] for a in pa["asks"]), 2)
         if total > 0:
             out.append(
                 {
                     "id": "mu·" + daemon[:4],
+                    "session_id": _short_id("mu", f"{daemon}/{sid}"),
+                    "session_ref": f"mu:{daemon}:{sid}",
+                    "started": datetime.datetime.fromtimestamp(
+                        (last_ts or 0) / 1000, tz=datetime.UTC
+                    )
+                    .date()
+                    .isoformat(),
                     "model": pa["model"] or model or "—",
                     "cost": total,
                     "asks": pa["asks"],
