@@ -20,7 +20,7 @@ import engine
 
 # Config-driven pricing (import-safe: sample_data guards its pipeline behind
 # __main__). RATES/MULT come from config.toml [rates]/[cache_multipliers].
-from sample_data import MULT, RATES, cost_kind, rate_key
+from sample_data import MULT, RATES, _is_dashboard_noise, cost_kind, rate_key
 
 # One query, the whole backbone. Everything is in the ev view:
 #   task_telemetry -> tokens + model + provider + started_at (the cost backbone)
@@ -120,6 +120,8 @@ def session_features(con):
             d["model"], d["input_tok"], d["output_tok"], d["cache_read_tok"], d["cache_write_tok"]
         )
         d["cost_kind"] = cost_kind(d["provider"], d["model"])
+        if _is_dashboard_noise({"model": d["model"], "kind": d["cost_kind"]}):
+            continue
         d["session_ref"] = f"{d['fleet']}:{d['session']}"
         rows.append(d)
     return rows

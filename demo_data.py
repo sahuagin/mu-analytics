@@ -526,6 +526,7 @@ def build():
             "duckdb": True,
             "event_dir_present": True,
             "marks_n": 5,
+            "mark_summary": {"marks": 5, "sessions": 5, "days": 5},
             "flags": {
                 "overview": {"thin": False},
                 "cost": {"thin": False, "cache_tier_sparse": True},

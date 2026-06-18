@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS marks(
     task_id            TEXT,
     session_id         TEXT,
     daemon             TEXT,
+    session_ref        TEXT,
     rating             INTEGER,
     note               TEXT,
     created_at_unix_ms INTEGER,
@@ -43,6 +44,9 @@ def _ensure():
     os.makedirs(os.path.dirname(MARKS_DB), exist_ok=True)
     con = sqlite3.connect(MARKS_DB)
     con.execute(_DDL)
+    cols = {r[1] for r in con.execute("PRAGMA table_info(marks)")}
+    if "session_ref" not in cols:
+        con.execute("ALTER TABLE marks ADD COLUMN session_ref TEXT")
     con.commit()
     return con
 
@@ -58,26 +62,28 @@ def read_marks(ev_con):
     """Union event-log operator marks + dashboard marks -> [{date,rating,note,source}]."""
     out = []
     rows = ev_con.execute(
-        "SELECT ts, json_extract_string(payload,'$.rating'), "
+        "SELECT fleet || ':' || session, ts, json_extract_string(payload,'$.rating'), "
         "json_extract_string(payload,'$.note') "
         "FROM ev WHERE kind='operator_mark' ORDER BY ts"
     ).fetchall()
-    for ts, rating, note in rows:
+    for ref, ts, rating, note in rows:
         out.append(
             {
                 "date": _day(ts),
+                "session_ref": ref,
                 "rating": _coerce_rating(rating),
                 "note": note or "",
                 "source": "mu_event",
             }
         )
     con = _ensure()
-    for ts, rating, note in con.execute(
-        "SELECT created_at_unix_ms, rating, note FROM marks ORDER BY created_at_unix_ms"
+    for ts, ref, rating, note in con.execute(
+        "SELECT created_at_unix_ms, session_ref, rating, note FROM marks ORDER BY created_at_unix_ms"
     ):
         out.append(
             {
                 "date": _day(ts),
+                "session_ref": ref or "",
                 "rating": _coerce_rating(rating),
                 "note": note or "",
                 "source": "dashboard",
@@ -86,6 +92,14 @@ def read_marks(ev_con):
     con.close()
     out.sort(key=lambda m: m["date"])
     return out
+
+
+def _session_ref(session_id=None, daemon=None, session_ref=None):
+    if session_ref:
+        return session_ref
+    if session_id:
+        return f"mu:{daemon}:{session_id}" if daemon else f"cc:{session_id}"
+    return None
 
 
 def read_marks_by_session(ev_con):
@@ -120,24 +134,39 @@ def read_marks_by_session(ev_con):
         _offer(ref, ts, rating, note, "mu_event")
 
     con = _ensure()
-    for sid, daemon, rating, note, ts in con.execute(
-        "SELECT session_id, daemon, rating, note, created_at_unix_ms FROM marks ORDER BY created_at_unix_ms"
+    for sid, daemon, ref, rating, note, ts in con.execute(
+        "SELECT session_id, daemon, session_ref, rating, note, created_at_unix_ms FROM marks ORDER BY created_at_unix_ms"
     ):
-        if sid:
-            _offer(f"mu:{daemon}:{sid}" if daemon else f"cc:{sid}", ts, rating, note, "dashboard")
+        _offer(_session_ref(sid, daemon, ref), ts, rating, note, "dashboard")
     con.close()
 
     return {ref: v for ref, (_ts, v) in latest.items()}
 
 
-def add_mark(task_id, rating, note="", session_id=None, daemon=None, created_at_unix_ms=None):
+def add_mark(
+    task_id,
+    rating,
+    note="",
+    session_id=None,
+    daemon=None,
+    created_at_unix_ms=None,
+    session_ref=None,
+):
     """Insert/replace one dashboard mark."""
     con = _ensure()
     ts = created_at_unix_ms if created_at_unix_ms is not None else int(time.time() * 1000)
     con.execute(
-        "INSERT OR REPLACE INTO marks(task_id, session_id, daemon, rating, note, "
-        "created_at_unix_ms, source, synced) VALUES (?,?,?,?,?,?, 'dashboard', 0)",
-        [task_id, session_id, daemon, _coerce_rating(rating), note, ts],
+        "INSERT OR REPLACE INTO marks(task_id, session_id, daemon, session_ref, rating, note, "
+        "created_at_unix_ms, source, synced) VALUES (?,?,?,?,?,?,?, 'dashboard', 0)",
+        [
+            task_id,
+            session_id,
+            daemon,
+            _session_ref(session_id, daemon, session_ref),
+            _coerce_rating(rating),
+            note,
+            ts,
+        ],
     )
     con.commit()
     con.close()
@@ -173,6 +202,7 @@ def ingest_inbox(inbox=None):
                     m.get("session_id"),
                     m.get("daemon"),
                     m.get("created_at_unix_ms"),
+                    m.get("session_ref") or m.get("ref"),
                 )
                 n += 1
         os.rename(path, path + ".ingested")
