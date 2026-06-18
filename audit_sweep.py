@@ -12,6 +12,7 @@ the degradation/scan output directly — the legacy emitted a slash form.
 Run: ./run audit_sweep.py [out.tsv]   (default ~/mu-stats/mu-audit-findings.tsv)
 """
 
+import concurrent.futures
 import glob
 import json
 import os
@@ -41,17 +42,44 @@ def first_ts(path):
     return ""
 
 
+def audit_file(path):
+    """Return TSV-safe finding rows for one event log."""
+    proc = subprocess.run([MU, "audit", path], capture_output=True, text=True)
+    found = FINDING.findall(proc.stdout)
+    if not found:
+        return []
+    daemon, sid = path.split("/")[-2], os.path.basename(path)[:-6]
+    ts = first_ts(path)
+    return [
+        (f"mu:{daemon}:{sid}", ts, sev, inv, ev, detail.replace("\t", " "))
+        for sev, inv, ev, detail in found
+    ]
+
+
+def audit_workers(n_files):
+    """Bound subprocess fan-out: enough to hide process startup/file latency, not
+    enough to stampede a dev box. Override with MU_ANALYTICS_AUDIT_WORKERS."""
+    override = os.environ.get("MU_ANALYTICS_AUDIT_WORKERS")
+    if override:
+        try:
+            return max(1, int(override))
+        except ValueError:
+            pass
+    return max(1, min(8, n_files, (os.cpu_count() or 4)))
+
+
 def sweep(events_glob=EVENTS):
     """Yield (session_ref, first_ts, severity, invariant, event_id, detail) tuples."""
-    for f in sorted(glob.glob(events_glob)):
-        proc = subprocess.run([MU, "audit", f], capture_output=True, text=True)
-        found = FINDING.findall(proc.stdout)
-        if not found:
-            continue
-        daemon, sid = f.split("/")[-2], os.path.basename(f)[:-6]
-        ts = first_ts(f)
-        for sev, inv, ev, detail in found:
-            yield (f"mu:{daemon}:{sid}", ts, sev, inv, ev, detail.replace("\t", " "))
+    files = sorted(glob.glob(events_glob))
+    workers = audit_workers(len(files))
+    if workers == 1:
+        for f in files:
+            yield from audit_file(f)
+        return
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+        # map preserves sorted file order, keeping TSV output deterministic.
+        for rows in ex.map(audit_file, files):
+            yield from rows
 
 
 def main():
