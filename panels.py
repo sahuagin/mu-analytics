@@ -604,7 +604,12 @@ def per_ask(con, daemon=None, session_id=None, limit=28):
 def per_ask_sessions(con, n=12, asks_limit=30):
     """Per-ask cost for the top-cost sessions — the choices behind the Cost page's
     session selector. Anthropic sessions rank first (real $ + visible cache-write
-    bars). Each: {id, model, cost, asks:[{i,cost,rewrite_5m}]}, costliest first."""
+    bars). Each: {id, model, cost, asks:[{i,cost,rewrite_5m}]}, costliest first.
+
+    Keep this batched: gen_dashboard calls it every refresh, and the earlier
+    implementation ran one DuckDB query per candidate session. On the live corpus
+    that made this single panel dominate dashboard contract generation.
+    """
     cand = con.execute(
         """
         WITH am AS (
@@ -616,18 +621,76 @@ def per_ask_sessions(con, n=12, asks_limit=30):
         tel AS (
             SELECT daemon, session_id, arg_max(json_extract_string(payload,'$.model'), ts) AS model
             FROM ev WHERE kind='task_telemetry' GROUP BY daemon, session_id
+        ),
+        dmodel AS (
+            SELECT daemon, arg_max(json_extract_string(payload,'$.model'), ts) AS model
+            FROM ev WHERE kind='task_telemetry' GROUP BY daemon
         )
-        SELECT am.daemon, am.session_id, tel.model, am.last_ts
-        FROM am LEFT JOIN tel USING (daemon, session_id)
+        SELECT am.daemon, am.session_id, COALESCE(tel.model, dmodel.model) AS model, am.last_ts
+        FROM am
+        LEFT JOIN tel USING (daemon, session_id)
+        LEFT JOIN dmodel USING (daemon)
         WHERE am.n BETWEEN 4 AND 60
-        ORDER BY (tel.model LIKE 'claude-%') DESC, am.cwsum DESC, am.n DESC
+        ORDER BY (COALESCE(tel.model, dmodel.model) LIKE 'claude-%') DESC, am.cwsum DESC, am.n DESC
         LIMIT 40
         """
     ).fetchall()
+    if not cand:
+        return []
+
+    con.execute(
+        "CREATE OR REPLACE TEMP TABLE _per_ask_candidates(daemon VARCHAR, session_id VARCHAR)"
+    )
+    con.executemany(
+        "INSERT INTO _per_ask_candidates VALUES (?, ?)", [(d, s) for d, s, _, _ in cand]
+    )
+    rows = con.execute(
+        """
+        WITH turns AS (
+            SELECT e.daemon, e.session_id, e.ts,
+                   json_extract(e.payload,'$.message.usage.input_tokens')::BIGINT AS inp,
+                   json_extract(e.payload,'$.message.usage.output_tokens')::BIGINT AS out,
+                   COALESCE(json_extract(e.payload,'$.message.usage.cache_read_input_tokens')::BIGINT,0) AS cr,
+                   COALESCE(json_extract(e.payload,'$.message.usage.cache_creation_input_tokens')::BIGINT,0) AS cw,
+                   (e.ts - lag(e.ts) OVER (PARTITION BY e.daemon, e.session_id ORDER BY e.ts)) / 60000.0 AS gap_min,
+                   row_number() OVER (PARTITION BY e.daemon, e.session_id ORDER BY e.ts) AS rn
+            FROM ev e
+            JOIN _per_ask_candidates c USING (daemon, session_id)
+            WHERE e.kind='assistant_message_event'
+        )
+        SELECT daemon, session_id, rn, inp, out, cr, cw, gap_min
+        FROM turns WHERE rn <= ?
+        ORDER BY daemon, session_id, rn
+        """,
+        [asks_limit],
+    ).fetchall()
+
+    by_session = {(daemon, sid): [] for daemon, sid, _model, _last_ts in cand}
+    for daemon, sid, rn, inp, o, cr, cw, gap_min in rows:
+        by_session[(daemon, sid)].append((rn, inp, o, cr, cw, gap_min))
+
     out = []
     for daemon, sid, model, last_ts in cand:
-        pa = per_ask(con, daemon=daemon, session_id=sid, limit=asks_limit)
-        total = round(sum(a["cost"] for a in pa["asks"]), 2)
+        rr = RATES.get(rate_key(model)) or RATES["claude-opus-4-8"]
+        asks = []
+        for rn, inp, o, cr, cw, gap_min in by_session.get((daemon, sid), []):
+            cost = (
+                (inp or 0) * rr["input"]
+                + (cr or 0) * rr["input"] * MULT["read"]
+                + (cw or 0) * rr["input"] * MULT["write_5m"]
+                + (o or 0) * rr["output"]
+            ) / 1e6
+            gap = round(gap_min, 2) if gap_min is not None else None
+            asks.append(
+                {
+                    "i": int(rn),
+                    "cost": round(cost, 4),
+                    "rewrite_5m": bool(cw),
+                    "gap_min": gap,
+                    "expired_5m": bool(gap is not None and gap > 5),
+                }
+            )
+        total = round(sum(a["cost"] for a in asks), 2)
         if total > 0:
             out.append(
                 {
@@ -639,9 +702,9 @@ def per_ask_sessions(con, n=12, asks_limit=30):
                     )
                     .date()
                     .isoformat(),
-                    "model": pa["model"] or model or "—",
+                    "model": model or "—",
                     "cost": total,
-                    "asks": pa["asks"],
+                    "asks": asks,
                 }
             )
     out.sort(key=lambda s: -s["cost"])

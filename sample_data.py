@@ -383,8 +383,9 @@ def _event_slices(con):
         import panels
 
         traj, drops, _ = panels.context_trajectory(con)
-        flagged = panels.flagged_queue(con)
-        flagged_total = len(panels.flagged_queue(con, limit=10_000))
+        flagged_all = panels.flagged_queue(con, limit=10_000)
+        flagged = flagged_all[:12]
+        flagged_total = len(flagged_all)
         return {
             "marks": marks_store.read_marks(con),
             "flagged_queue": flagged,
