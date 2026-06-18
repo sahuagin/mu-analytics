@@ -44,6 +44,22 @@ class TestAuditParse(unittest.TestCase):
         daemon, sid = f.split("/")[-2], os.path.basename(f)[:-6]
         self.assertEqual(f"mu:{daemon}:{sid}", "mu:1a7812f064510d91:session-1")
 
+    def test_audit_workers_bounds_and_override(self):
+        old = os.environ.pop("MU_ANALYTICS_AUDIT_WORKERS", None)
+        try:
+            self.assertEqual(a.audit_workers(0), 1)
+            self.assertGreaterEqual(a.audit_workers(100), 1)
+            self.assertLessEqual(a.audit_workers(100), 8)
+            os.environ["MU_ANALYTICS_AUDIT_WORKERS"] = "2"
+            self.assertEqual(a.audit_workers(100), 2)
+            os.environ["MU_ANALYTICS_AUDIT_WORKERS"] = "not-int"
+            self.assertLessEqual(a.audit_workers(100), 8)
+        finally:
+            if old is None:
+                os.environ.pop("MU_ANALYTICS_AUDIT_WORKERS", None)
+            else:
+                os.environ["MU_ANALYTICS_AUDIT_WORKERS"] = old
+
 
 if __name__ == "__main__":
     unittest.main()
