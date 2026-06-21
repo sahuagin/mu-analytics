@@ -14,20 +14,30 @@
 python_interpreter_path = "/usr/local/bin/python3.11"
 
 [paths]
-# mu's real sink — READ-ONLY source of mu-side task rows. We never write here.
-mu_sink_db = "/home/USER/.local/share/mu/telemetry.sqlite"
-# cc rollup we own, kept SEPARATE from mu's sink; the polars layer unions the two
+# Consolidated per-machine session archive. Both fleets' raw logs live under it:
+#   <ai-sessions>/mu/<machine>/events/<daemon>/session-*.jsonl   (mu, see mu_events_root)
+#   <ai-sessions>/claude/<machine>/{projects,experiments}/.../<id>.jsonl  (cc, see cc_log_roots)
+# machine = threadripper, aiteam, ... — discovery spans every machine present.
+
+# mu raw-event root: parent of the per-machine dirs. refresh.sh loops
+# `mu analytics compact --events-dir <root>/<machine>/events` over each machine,
+# and engine.py globs <root>/*/events/*/*.jsonl.
+mu_events_root = "/home/USER/ai-sessions/mu"
+# OUR dedicated mu rollup, built from the archive above — kept separate from mu's
+# own operational ~/.local/share/mu/telemetry.sqlite (which holds only THIS host's
+# live mu and must not be polluted with other machines' archived events).
+mu_sink_db = "/home/USER/src/mu-analytics/data/mu-telemetry.sqlite"
+# cc rollup we own, kept SEPARATE from the mu sink; the polars layer unions the two
 # at read time so cc data never mutates mu's store.
 cc_sink_db = "/home/USER/src/mu-analytics/data/cc-telemetry.sqlite"
 # where the cc->mu TaskTelemetry emitter writes mu-format event logs.
 cc_events_out = "/home/USER/src/mu-analytics/data/cc-events"
 # where refresh.sh writes the live dashboard (nginx-served).
 dashboard_out = "/home/USER/mu-stats/analytics/index.html"
-# claude-code transcript roots (one per cc account), globbed for *.jsonl.
+# claude-code transcript roots, recursed (**) for *.jsonl. The consolidated archive
+# merges all accounts per machine, so this is one root, not one-per-account.
 cc_log_roots = [
-  "/home/USER/.claude/projects",
-  "/home/USER/.claude-personal/projects",
-  "/home/USER/.claude-openrouter/projects",
+  "/home/USER/ai-sessions/claude",
 ]
 
 # ── Pricing ─────────────────────────────────────────────────────────────

@@ -35,9 +35,17 @@ if not os.path.exists(_CFG_PATH):
 _cfg = tomllib.load(open(_CFG_PATH, "rb"))
 PATHS = _cfg["paths"]
 
-# mu's event log sits beside its sink:  <...>/mu/telemetry.sqlite -> <...>/mu/events
-MU_EVENTS = os.path.join(os.path.dirname(PATHS["mu_sink_db"]), "events")
-MU_GLOB = os.path.join(MU_EVENTS, "*", "*.jsonl")
+# mu raw events. Canonical source is now the consolidated per-machine archive
+#   <mu_events_root>/<machine>/events/<daemon>/session-*.jsonl   (machine = threadripper, aiteam, ...)
+# so one glob spans every machine. Legacy fallback (no mu_events_root key): mu's
+# event log beside its sink, <...>/mu/telemetry.sqlite -> <...>/mu/events/<daemon>/*.jsonl.
+_MU_EVENTS_ROOT = PATHS.get("mu_events_root")
+if _MU_EVENTS_ROOT:
+    MU_EVENTS = os.path.expanduser(_MU_EVENTS_ROOT)
+    MU_GLOB = os.path.join(MU_EVENTS, "*", "events", "*", "*.jsonl")
+else:
+    MU_EVENTS = os.path.join(os.path.dirname(PATHS["mu_sink_db"]), "events")
+    MU_GLOB = os.path.join(MU_EVENTS, "*", "*.jsonl")
 
 # cc's full-fidelity event log (the WS2 emitter's output): one JSONL per session
 # under a provider dir, e.g.  <cc_events_out>/claude-code/<session-uuid>.jsonl
