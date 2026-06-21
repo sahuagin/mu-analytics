@@ -463,32 +463,51 @@ def main():
     here = os.path.dirname(os.path.abspath(__file__))
     if len(sys.argv) >= 3:  # ad-hoc: explicit <pattern> <out-dir>
         patterns, out_dir = [sys.argv[1]], sys.argv[2]
-    else:  # default: ALL cc accounts from config
+    else:  # default: ALL cc transcripts under the consolidated archive
         cfg = tomllib.load(open(os.path.join(here, "config.toml"), "rb"))
-        patterns = [os.path.join(r, "*", "*.jsonl") for r in cfg["paths"]["cc_log_roots"]]
+        # cc transcripts nest under the per-machine archive at varying depth:
+        #   <root>/<machine>/projects/<slug>/<uuid>.jsonl   (canonical sessions)
+        #   <root>/<machine>/experiments/.../<name>.jsonl   (goal-run transcripts)
+        # so recurse with ** rather than the old fixed depth-1 `*/*.jsonl`.
+        patterns = [os.path.join(r, "**", "*.jsonl") for r in cfg["paths"]["cc_log_roots"]]
         out_dir = cfg["paths"]["cc_events_out"]
     files = []
     for pat in patterns:
-        files.extend(sorted(glob.glob(os.path.expanduser(pat))))
+        # recursive=True so ** spans any depth; dedup since ** also matches the
+        # depth-1 layer a non-recursive glob would have seen.
+        files.extend(glob.glob(os.path.expanduser(pat), recursive=True))
+    # history.jsonl (the per-machine prompt-history file) is NOT a transcript —
+    # different schema, yields no SessionEvents — so drop it from the sweep.
+    files = sorted({f for f in files if os.path.basename(f) != "history.jsonl"})
     daemon_dir = os.path.join(out_dir, "claude-code")
     os.makedirs(daemon_dir, exist_ok=True)
-    n_sessions = n_events = 0
+    n_sessions = n_events = n_skipped = 0
     kinds = collections.Counter()
     for f in files:
         try:
             res = convert_session(f)
         except PermissionError:
             continue
+        except Exception:
+            # recursive discovery sweeps heterogeneous jsonl; one non-transcript
+            # or malformed file must not abort the whole emit.
+            n_skipped += 1
+            continue
         if not res:
             continue
         sid, events = res
+        if not events:
+            n_skipped += 1
+            continue  # parsed but no session turns — not a transcript; skip
         with open(os.path.join(daemon_dir, f"{sid}.jsonl"), "w") as out:
             for ev in events:
                 out.write(json.dumps(ev, separators=(",", ":")) + "\n")
                 kinds[ev["payload"]["kind"]] += 1
         n_sessions += 1
         n_events += len(events)
-    print(f"emitted {n_sessions} session(s), {n_events} events")
+    print(
+        f"emitted {n_sessions} session(s), {n_events} events, {n_skipped} skipped (non-transcript)"
+    )
     print("  kinds: " + ", ".join(f"{k}={n}" for k, n in kinds.most_common()))
     note = "" if _MA else "  [mu_anthropic_py NOT importable — all fallback; build the wheel]"
     print(f"  parse: {_PARSE['typed']} typed (mu-anthropic), {_PARSE['fallback']} fallback{note}")

@@ -14,6 +14,8 @@ mu="$HOME/.local/bin/mu"
 out=$(tq -f "$here/config.toml" -r paths.dashboard_out)
 cc_events=$(tq -f "$here/config.toml" -r paths.cc_events_out)
 cc_sink=$(tq -f "$here/config.toml" -r paths.cc_sink_db)
+mu_sink=$(tq -f "$here/config.toml" -r paths.mu_sink_db)
+mu_events_root=$(tq -f "$here/config.toml" -r paths.mu_events_root)
 pidfile="${TMPDIR:-/tmp}/mu-analytics-refresh.pid"
 
 now_s() { date +%s; }
@@ -52,8 +54,15 @@ run_step() {
 
 start_total=$(now_s)
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] mu-analytics refresh"
-# mu sink: project mu's own events (idempotent upsert into telemetry.sqlite)
-run_step "mu compact" "$mu" analytics compact
+# mu sink: project every machine's mu events from the consolidated archive
+#   <mu_events_root>/<machine>/events/<daemon>/*.jsonl  ->  mu_sink (idempotent upsert).
+# Loop because `mu analytics compact --events-dir` wants ONE dir whose immediate
+# children are daemon dirs; the archive interposes a per-machine level above that.
+for evdir in "$mu_events_root"/*/events; do
+  [ -d "$evdir" ] || continue
+  machine=$(basename "$(dirname "$evdir")")
+  run_step "mu compact [$machine]" "$mu" analytics compact --events-dir "$evdir" --db "$mu_sink"
+done
 # cc sink: re-emit all cc accounts -> events -> compact
 run_step "cc emit" "$here/run" cc_telemetry.py
 run_step "cc compact" "$mu" analytics compact --events-dir "$cc_events" --db "$cc_sink"
