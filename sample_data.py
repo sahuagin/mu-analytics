@@ -139,9 +139,20 @@ def _row_identity(r):
     key = r.get("task_id") or ""
     display_id = _short_id(fleet, key)
     aliases = {display_id, key}
-    ref = r.get("ref") or (f"cc:{key}" if fleet == "cc" and key else key)
+    ref = r.get("ref")
+    if not ref:
+        if fleet == "cc" and key:
+            # Dashboard/sink task ids are "cc-<uuid>" for display + sidecar keys,
+            # but the event-log canonical session_ref used by features/scans is
+            # "cc:<uuid>". Export marks with the canonical ref while keeping the
+            # legacy/display forms as aliases for search and old localStorage dumps.
+            ref = f"cc:{key[3:]}" if key.startswith("cc-") else f"cc:{key}"
+        else:
+            ref = key
     if ref:
         aliases.add(ref)
+    if fleet == "cc" and key:
+        aliases.add(f"cc:{key}")
     daemon = r.get("daemon")
     sid = r.get("sid")
     if daemon:
@@ -196,7 +207,8 @@ def _sessionize_mu(mu_rows, sessions):
     return out
 
 
-def _build_sink(mu_session_map=None):
+def _build_sink(mu_session_map=None, marks_by_session=None):
+    marks_by_session = marks_by_session or {}
     mu_rows = _load("mu", PATHS["mu_sink_db"])
     if mu_session_map:
         mu_rows = _sessionize_mu(mu_rows, mu_session_map)
@@ -290,7 +302,7 @@ def _build_sink(mu_session_map=None):
             "outcome": r["outcome_class"] or "unclassified",
             "tool_calls": r["tools"],
             "started": _day(r["started_at_unix_ms"] or r["ended_at_unix_ms"]),
-            "flagged": False,
+            "flagged": display_id in marks_by_session or ref in marks_by_session,
             "child": bool(r.get("is_child")),
         }
 
@@ -467,7 +479,15 @@ def build():
                 f"  warn: mu session map unavailable ({e}); sessions stay task-grained",
                 file=sys.stderr,
             )
-    result = _build_sink(mu_session_map)
+    marks_by_session = {}
+    if con is not None:
+        try:
+            import marks_store
+
+            marks_by_session = marks_store.read_marks_by_session(con)
+        except Exception as e:
+            print(f"  warn: session marks unavailable ({e}); sessions unflagged", file=sys.stderr)
+    result = _build_sink(mu_session_map, marks_by_session)
     slices, present = _event_slices(con)
     # the event log carries the REAL degradation signal; overlay it onto the trend
     # (replacing the sink's narrative_no_action artifact) and surface the headline rate
@@ -524,11 +544,17 @@ def build():
         result.setdefault(k, default)
     # ML-degradation probe + mu-audit findings (refresh-produced files) -> DATA.
     result.update(_degradation_probe())
+    mark_summary = {
+        "marks": len(slices.get("marks", [])),
+        "sessions": len(marks_by_session),
+        "days": len({m.get("date") for m in slices.get("marks", []) if m.get("date")}),
+    }
     result["meta"] = {
         "enrichment_status": "pending_commit_enricher",
         "duckdb": present,
         "event_dir_present": present,
         "marks_n": len(slices.get("marks", [])),
+        "mark_summary": mark_summary,
         "flags": {
             "overview": {"thin": False},
             "cost": {"thin": False, "cache_tier_sparse": True},

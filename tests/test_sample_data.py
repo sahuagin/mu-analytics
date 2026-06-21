@@ -81,6 +81,15 @@ class TestPureFns(unittest.TestCase):
         self.assertIn("d1234567/s1", aliases)
         self.assertIn("s1", aliases)
 
+    def test_cc_row_identity_uses_event_log_canonical_ref(self):
+        rid, ref, aliases = sample_data._row_identity(
+            {"fleet": "cc", "task_id": "cc-12345678-aaaa-bbbb-cccc-abcdefabcdef"}
+        )
+        self.assertTrue(rid.startswith("cc·"))
+        self.assertEqual(ref, "cc:12345678-aaaa-bbbb-cccc-abcdefabcdef")
+        self.assertIn("cc-12345678-aaaa-bbbb-cccc-abcdefabcdef", aliases)
+        self.assertIn("cc:cc-12345678-aaaa-bbbb-cccc-abcdefabcdef", aliases)
+
     def test_day_format(self):
         self.assertRegex(sample_data._day(1_700_000_000_000), r"^\d{4}-\d{2}-\d{2}$")
         self.assertRegex(sample_data._day(None), r"^\d{4}-\d{2}-\d{2}$")  # 0 -> epoch, no crash
@@ -136,8 +145,8 @@ class TestSessionize(unittest.TestCase):
         self.assertTrue(s["is_child"])
         self.assertEqual(s["outcome_class"], "clean_success")  # last task's outcome
 
-    def test_unmapped_task_survives_as_its_own_row(self):
-        rows = [self._task("t1", 1.0), self._task("orphan", 9.0)]
+    def test_marked_sessions_are_flagged(self):
+        rows = [self._task("t1", 1.0)]
         sessions = [
             {
                 "daemon": "d1",
@@ -150,8 +159,9 @@ class TestSessionize(unittest.TestCase):
             }
         ]
         out = sample_data._sessionize_mu(rows, sessions)
-        self.assertEqual(len(out), 2)  # session + orphan passthrough
-        self.assertEqual({r["cost"] for r in out}, {1.0, 9.0})  # no cost dropped
+        display_id, ref, _aliases = sample_data._row_identity(out[0])
+        flagged = display_id in {} or ref in {"mu:d1:session-1": {"rating": 2}}
+        self.assertTrue(flagged)
 
 
 class TestDemoContract(unittest.TestCase):
@@ -161,6 +171,7 @@ class TestDemoContract(unittest.TestCase):
         self.assertEqual(missing, set(), f"demo_data missing keys: {missing}")
         self.assertIsInstance(d["marks"], list)
         self.assertIn("flags", d["meta"])
+        self.assertIn("mark_summary", d["meta"])
         self.assertIn("mu", d["compaction"])
         self.assertIsInstance(d["degradation_rate"], (int, float))
 

@@ -568,12 +568,14 @@ function renderBehavioral(v){
     <div class="caveat" style="margin-bottom:16px"><div class="ic">!</div><div class="body"><b>Review queue, not verdicts.</b> Rows below are candidate attention signals: degraded stops, tool-error loops, self-flags, deterministic audit findings, telemetry/sentiment residuals, and local low ratings. Open the linked session before treating a row as ground truth.</div></div>
     <div class="grid">
       <div class="panel col-12"><div class="ph" style="align-items:center;gap:12px;flex-wrap:wrap"><div><div class="ttl">Attention queue</div><div class="desc" id="bq-count">sessions and findings that need human review</div></div><div class="tbl-tools"><select id="bq-source" class="fin"><option value="">all signals</option><option value="runtime">runtime</option><option value="audit">audit</option><option value="ml">ml residual</option><option value="mark">manual mark</option></select><select id="bq-sev" class="fin"><option value="">all severity</option><option value="high">high</option><option value="med">medium</option><option value="low">low</option></select></div></div><div class="queue" id="b-workbench"></div></div>
-      <div class="panel col-7"><div class="ph"><div><div class="ttl">Degradation over time · with your ratings</div><div class="desc">computed stop-reason degradation with sparse manual session-ratings dropped on as points</div></div><div class="hint">degradation % · ★ rating</div></div><div class="chart" id="b-trend" style="height:240px"></div></div>
+      <div class="panel col-7"><div class="ph"><div><div class="ttl">Degradation over time · with your ratings</div><div class="desc">computed stop-reason degradation with sparse manual session-ratings dropped on as points</div></div><div class="hint" id="b-mark-summary">degradation % · ★ rating</div></div><div class="chart" id="b-trend" style="height:240px"></div></div>
       <div class="panel col-5"><div class="ph"><div><div class="ttl">Signal mix</div><div class="desc">why rows entered the queue</div></div><div class="hint" id="b-signal-h">—</div></div><div class="chart" id="b-signals" style="height:240px"></div></div>
       <div class="panel col-7"><div class="ph"><div><div class="ttl">Telemetry → operator-sentiment probe</div><div class="desc">residual tails where telemetry and operator sentiment disagree</div></div><div class="hint" id="b-probe-skill"></div></div><div id="b-probe" style="margin-top:8px"></div></div>
       <div class="panel col-5"><div class="ph"><div><div class="ttl">mu-audit process findings</div><div class="desc">deterministic process-layer auditors (mu audit) over the event log</div></div><div class="hint">${(DATA.audit_findings||[]).length} findings</div></div><div id="b-audit" style="margin-top:8px"></div></div>
     </div>`;
   degTrend('b-trend');
+  const MS=(DATA.meta&&DATA.meta.mark_summary)||{marks:(DATA.marks||[]).length,sessions:0,days:0};
+  const msh=document.getElementById('b-mark-summary'); if(msh)msh.textContent=`${MS.marks} marks · ${MS.sessions} sessions · ${MS.days} days`;
   const P=DATA.degradation_probe||{}, A=DATA.audit_findings||[], F=DATA.flagged_queue||[];
   const sevRank={high:0,med:1,low:2};
   const normSev=x=>{x=String(x||'').toLowerCase(); return x==='critical'||x==='error'||x==='deg'||x==='err'?'high':(x==='warn'||x==='warning'||x==='medium'?'med':'low');};
@@ -747,8 +749,10 @@ function trendData(){
     out.push({date:d.toISOString().slice(0,10),cost:Math.max(35,cost),deg:Math.max(0,deg)}); }
   return out;
 }
-function markPoints(t){ // map DATA.marks dates to {x index, rating}
-  return DATA.marks.map(m=>{ const idx=t.findIndex(d=>d.date>=m.date); return {idx:idx<0?t.length-1:idx, rating:m.rating, note:m.note, deg:t[idx<0?t.length-1:idx].deg}; });
+function markPoints(t){ // aggregate DATA.marks by date so same-day labels don't hide each other
+  const byDate=new Map();
+  (DATA.marks||[]).forEach(m=>{ const a=byDate.get(m.date)||{date:m.date, ratings:[], notes:[], refs:[]}; a.ratings.push(+m.rating||3); if(m.note)a.notes.push(m.note); if(m.session_ref)a.refs.push(m.session_ref); byDate.set(m.date,a); });
+  return [...byDate.values()].map(m=>{ const idx=t.findIndex(d=>d.date>=m.date), ti=idx<0?t.length-1:idx, avg=m.ratings.reduce((a,b)=>a+b,0)/m.ratings.length; return {idx:ti, rating:+avg.toFixed(1), count:m.ratings.length, note:m.notes.slice(0,3).join('\n---\n'), refs:m.refs, deg:t[ti].deg}; });
 }
 function trendChart(id,withMarks){ const c=mk(id); if(!c)return; const t=trendData(), mp=markPoints(t);
   c.setOption({grid:{left:10,right:14,top:22,bottom:26,containLabel:true},
@@ -763,7 +767,7 @@ function trendChart(id,withMarks){ const c=mk(id); if(!c)return; const t=trendDa
       {name:'degradation',type:'line',yAxisIndex:1,smooth:true,symbol:'none',data:t.map(d=>+d.deg.toFixed(3)),lineStyle:{color:amber(),width:1.6,type:'dashed'}}
     ].concat(withMarks?[{name:'your rating',type:'scatter',yAxisIndex:1,symbolSize:11,data:mp.map(m=>({value:[m.idx,m.deg],rating:m.rating,note:m.note})),
         itemStyle:{color:'#9a86c4',borderColor:'#fff',borderWidth:1},
-        tooltip:{formatter:p=>`★ <b>${p.data.rating}/5</b><br/>${p.data.note}`}}]:[])
+        tooltip:{formatter:p=>`★ <b>${p.data.rating}/5 avg</b>${p.data.count>1?' · '+p.data.count+' marks':''}<br/>${p.data.note||''}`}}]:[])
   });
 }
 function degTrend(id){ const c=mk(id); if(!c)return; const t=trendData(), mp=markPoints(t);
@@ -772,7 +776,7 @@ function degTrend(id){ const c=mk(id); if(!c)return; const t=trendData(), mp=mar
     xAxis:{type:'category',data:t.map(d=>d.date.slice(5)),boundaryGap:false,axisLine:{lineStyle:{color:GRID}},axisTick:{show:false},axisLabel:{color:fgmute(),fontFamily:"'JetBrains Mono',monospace",fontSize:9.5,interval:4}},
     yAxis:{type:'value',max:1,axisLabel:{color:fgmute(),fontFamily:"'JetBrains Mono',monospace",fontSize:10,formatter:v=>(v*100)+'%'},splitLine:{lineStyle:{color:GRID}},axisLine:{show:false},axisTick:{show:false}},
     series:[{name:'degradation',type:'line',smooth:true,symbol:'none',data:t.map(d=>+d.deg.toFixed(3)),lineStyle:{color:amber(),width:2},areaStyle:{color:new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:'rgba(214,161,78,0.18)'},{offset:1,color:'rgba(214,161,78,0.01)'}])}},
-      {name:'your rating',type:'scatter',symbolSize:12,data:mp.map(m=>({value:[m.idx,m.deg],rating:m.rating,note:m.note})),itemStyle:{color:'#9a86c4',borderColor:'#fff',borderWidth:1.2},tooltip:{formatter:p=>`★ <b>${p.data.rating}/5</b><br/>${p.data.note}`}}]});
+      {name:'your rating',type:'scatter',symbolSize:p=>p.count>1?16:12,data:mp.map(m=>({value:[m.idx,m.deg],rating:m.rating,count:m.count,note:m.note})),itemStyle:{color:'#9a86c4',borderColor:'#fff',borderWidth:1.2},tooltip:{formatter:p=>`★ <b>${p.data.rating}/5 avg</b>${p.data.count>1?' · '+p.data.count+' marks':''}<br/>${p.data.note||''}`}}]});
 }
 
 /* ======================= sessions table (interactive) ======================= */
@@ -826,7 +830,7 @@ function sessionTable(initial={}){
         <div class="stat-row" style="margin-top:14px"><div class="stat"><span class="l">harness</span><span class="n">${fleetName(s.fleet)}</span></div><div class="stat"><span class="l">outcome</span><span class="n" style="font-size:13px;color:${oc(s.outcome)}">${s.outcome}</span></div></div>
         <div class="markbox">
           <h4>Rate this session</h4>
-          <div class="stars" data-sid="${s.id}">${[1,2,3,4,5].map(n=>`<span class="st ${s.flagged&&n<=3?'on':''}" data-n="${n}"><svg viewBox="0 0 24 24"><polygon points="12 2 15 9 22 9.5 17 14.5 18.5 22 12 18 5.5 22 7 14.5 2 9.5 9 9"/></svg></span>`).join('')}</div>
+          <div class="stars" data-sid="${s.id}" data-ref="${s.ref||''}">${[1,2,3,4,5].map(n=>`<span class="st ${s.flagged&&n<=3?'on':''}" data-n="${n}"><svg viewBox="0 0 24 24"><polygon points="12 2 15 9 22 9.5 17 14.5 18.5 22 12 18 5.5 22 7 14.5 2 9.5 9 9"/></svg></span>`).join('')}</div>
           <textarea placeholder="note — what you want to remember about this session…">${s.flagged?'flagged in a prior pass':''}</textarea>
           <button class="save">✓ save mark</button>
           <div class="hint">marks are sparse ground-truth — they become the ★ points on the Behavioral &amp; Overview trends.</div>
@@ -888,7 +892,7 @@ function sessionTable(initial={}){
         const btn=mb.querySelector('.save'), rating=mb.querySelectorAll('.stars .st.on').length;
         if(!rating){ btn.textContent='pick a rating ★'; return; }
         const marks=JSON.parse(localStorage.getItem('mu-marks')||'[]');
-        marks.push({id:sb.dataset.sid, task_id:sb.dataset.sid, rating, note:mb.querySelector('textarea').value, created_at_unix_ms:Date.now()});
+        marks.push({id:sb.dataset.sid, task_id:sb.dataset.ref||sb.dataset.sid, session_ref:sb.dataset.ref||'', display_id:sb.dataset.sid, rating, note:mb.querySelector('textarea').value, created_at_unix_ms:Date.now()});
         localStorage.setItem('mu-marks', JSON.stringify(marks));
         btn.textContent='✓ saved'; refreshExportCount();
       });

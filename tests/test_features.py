@@ -98,12 +98,10 @@ class TestSessionFeatures(unittest.TestCase):
         self.assertEqual(r["cost_usd"], features.price(PRICED_MODEL, 1000, 200, 500, 100))
         self.assertGreater(r["cost_usd"], 0)
 
-    def test_unlisted_model_prices_to_zero(self):
+    def test_dashboard_noise_model_is_excluded(self):
         with tempfile.TemporaryDirectory() as tmp:
-            rows = features.session_features(_connect(tmp, model="totally-made-up-model-xyz"))
-        self.assertEqual(rows[0]["cost_usd"], 0.0)
-        # but the token features are still present (cost is the only thing gated)
-        self.assertEqual(rows[0]["input_tok"], 1000)
+            rows = features.session_features(_connect(tmp, model="faux"))
+        self.assertEqual(rows, [])
 
 
 if __name__ == "__main__":
