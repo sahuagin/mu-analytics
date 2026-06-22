@@ -4,15 +4,17 @@ emitter, per account shape.
 WS2's test_cc_telemetry.py proves the full-stream shape on one anthropic-shaped
 transcript. This adds a REUSABLE count/token parity harness that derives the
 expected totals from the SOURCE records and asserts the emitted SessionEvent
-stream matches — run against synthetic fixtures for each account shape
-(claude_code = personal/work; openrouter = pay-per-token, provider-prefixed
-model, detected by the .claude-openrouter path).
+stream matches — run against synthetic fixtures covering the transcript shapes
+we ingest: the standard Anthropic shape and a provider-prefixed model name
+(e.g. historical openrouter-backed sessions like "google/gemma-...").
+
+All cc sessions classify as claude_code/subscription (the consolidated archive
+flattens account dirs — there is no per-account provider signal in the path).
 
 Fixtures are synthetic (no real transcript content) — mu-analytics is a public
-repo; real cc transcripts carry conversation PII. The shapes mirror the live
-accounts: claude-code normalizes the transcript format across providers, so the
-usage schema is identical; the meaningful axes are the provider path (drives
-provider_kind / cost_kind) and the model name (openrouter is provider-prefixed).
+repo; real cc transcripts carry conversation PII. claude-code normalizes the
+transcript format across providers, so the usage schema is identical; the model
+name may be provider-prefixed, which the parity harness must round-trip losslessly.
 """
 
 import json
@@ -119,8 +121,10 @@ def _claude_code_transcript():
     ]
 
 
-def _openrouter_transcript():
-    """Openrouter shape: provider-prefixed model; single ask, one tool round-trip."""
+def _provider_prefixed_model_transcript():
+    """Provider-prefixed model name (e.g. historical openrouter-backed sessions):
+    single ask, one tool round-trip. The account is irrelevant — this exercises
+    that a non-bare model name round-trips losslessly."""
     return [
         _user("summarize", 0),
         _asst(
@@ -281,13 +285,12 @@ class TestCcParity(unittest.TestCase):
         # the non-conversation record was skipped, not emitted/crashed
         self.assertEqual(cct._SKIPPED_TYPES.get("file-history-snapshot"), 1)
 
-    def test_parity_openrouter(self):
-        # path under .claude-openrouter → provider_kind = openrouter (pay-per-token)
-        src, emit = self._run(
-            _openrouter_transcript(), ".claude-openrouter/projects/p/d83eace4.jsonl"
-        )
+    def test_parity_provider_prefixed_model(self):
+        # a provider-prefixed model name must round-trip losslessly; all cc
+        # sessions classify as claude_code regardless of the path.
+        src, emit = self._run(_provider_prefixed_model_transcript(), "proj/d83eace4.jsonl")
         self._assert_parity(src, emit)
-        self.assertEqual(emit["provider_kind"], "openrouter")
+        self.assertEqual(emit["provider_kind"], "claude_code")
 
     def test_stop_sequence_normalizes_end_to_end(self):
         # a raw 'stop_sequence' turn must surface as 'end_turn' in the stream

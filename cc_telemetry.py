@@ -332,9 +332,10 @@ def convert_session(path: str):
     sid = os.path.basename(path)
     if sid.endswith(".jsonl"):
         sid = sid[:-6]
-    # Serving path drives cost_kind: openrouter account is pay-per-token (billed);
-    # personal/work are Anthropic subscription (claude_code).
-    provider = "openrouter" if "/.claude-openrouter/" in path else "claude_code"
+    # All cc sessions are Anthropic subscription. The consolidated ~/ai-sessions
+    # archive flattens the account dirs, so there is no per-account provider signal
+    # in the path (the vestigial .claude-openrouter billed-account detection is gone).
+    provider = "claude_code"
 
     # Pass 2: assign monotonic ids, expand to the SessionEvent stream in order.
     events = []
