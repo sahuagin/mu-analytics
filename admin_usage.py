@@ -15,9 +15,11 @@ Endpoints (terrain-verified 2026-06-06 against the live org):
       -> per-day buckets; results[].amount is a USD string IN CENTS (divide by 100).
 
 Auth: an admin key (sk-ant-admin...) sent as x-api-key. Read from ANTHROPIC_ADMIN_KEY
-first, then the file at ANTHROPIC_ADMIN_KEY_FILE (default ~/.claude-personal/secrets/
-anthropic-admin-key, mode 600). The key is never logged, never returned, never
-interpolated into an error — failures surface only the exception class + HTTP status.
+first, then [anthropic].admin_key in the agent config via `tq` (AGENT_CONFIG, default
+~/.config/agent/config.toml), then the file at ANTHROPIC_ADMIN_KEY_FILE (default
+~/.claude-personal/secrets/anthropic-admin-key, mode 600). The key is never logged,
+never returned, never interpolated into an error — failures surface only the
+exception class + HTTP status.
 
 `requests` is the `admin` optional extra, imported lazily inside _get — the pure
 pricing/window functions and the no-key degradation path test without it.
@@ -27,9 +29,11 @@ from __future__ import annotations
 
 import datetime as _dt
 import os
+import subprocess
 from pathlib import Path
 
 _KEY_FILE = Path.home() / ".claude-personal/secrets/anthropic-admin-key"
+_CONFIG = Path.home() / ".config/agent/config.toml"
 _BASE = "https://api.anthropic.com/v1/organizations"
 _VERSION = "2023-06-01"
 _TIMEOUT = 30
@@ -49,11 +53,29 @@ class _AdminError(Exception):
 
 
 def admin_key():
-    """Admin key from env then the 600-mode file; None if neither present.
-    ANTHROPIC_ADMIN_KEY_FILE overrides the default file path."""
+    """Admin key, in precedence order: env ANTHROPIC_ADMIN_KEY, then the agent
+    config's [anthropic].admin_key via `tq` (AGENT_CONFIG overrides the default
+    ~/.config/agent/config.toml — the canonical home), then the legacy 600-mode
+    file (ANTHROPIC_ADMIN_KEY_FILE overrides its default). None if none present.
+    Config is preferred over the file so a stale key file can't shadow a rotated
+    config value."""
     env = os.environ.get("ANTHROPIC_ADMIN_KEY")
     if env and env.strip():
         return env.strip()
+    cfg = Path(os.environ.get("AGENT_CONFIG") or _CONFIG)
+    if cfg.exists():
+        try:
+            r = subprocess.run(
+                ["tq", "-r", "-f", str(cfg), "anthropic.admin_key"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            k = r.stdout.strip()
+            if r.returncode == 0 and k:
+                return k
+        except (OSError, subprocess.SubprocessError):
+            pass  # tq missing/failed -> fall through to the legacy file
     path = Path(os.environ.get("ANTHROPIC_ADMIN_KEY_FILE") or _KEY_FILE)
     try:
         if path.exists():
@@ -92,7 +114,8 @@ def _get(path: str, params: dict):
     key = admin_key()
     if not key:
         raise _AdminError(
-            "no admin key (env ANTHROPIC_ADMIN_KEY or ~/.claude-personal/secrets/anthropic-admin-key)"
+            "no admin key (env ANTHROPIC_ADMIN_KEY, [anthropic].admin_key in "
+            "~/.config/agent/config.toml, or the key file)"
         )
     try:
         import requests  # noqa: PLC0415 — lazy: the `admin` optional extra
