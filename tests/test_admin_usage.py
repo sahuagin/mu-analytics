@@ -59,20 +59,45 @@ class TestAuthAndDegradation(unittest.TestCase):
     def test_admin_key_absent_returns_none(self):
         os.environ.pop("ANTHROPIC_ADMIN_KEY", None)
         os.environ["ANTHROPIC_ADMIN_KEY_FILE"] = "/nonexistent/admin/key/file"
+        # Also isolate the config source so a real ~/.config/agent/config.toml
+        # on the dev box / host can't shadow the no-key path.
+        os.environ["AGENT_CONFIG"] = "/nonexistent/agent/config.toml"
         try:
             self.assertIsNone(au.admin_key())
         finally:
             del os.environ["ANTHROPIC_ADMIN_KEY_FILE"]
+            del os.environ["AGENT_CONFIG"]
+
+    def test_admin_key_from_config_via_tq(self):
+        import shutil
+        import tempfile
+
+        if not shutil.which("tq"):
+            self.skipTest("tq not installed")
+        os.environ.pop("ANTHROPIC_ADMIN_KEY", None)
+        os.environ["ANTHROPIC_ADMIN_KEY_FILE"] = "/nonexistent/admin/key/file"
+        with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as f:
+            f.write('[anthropic]\nadmin_key = "sk-ant-admin-fromcfg"\n')
+            cfg = f.name
+        os.environ["AGENT_CONFIG"] = cfg
+        try:
+            self.assertEqual(au.admin_key(), "sk-ant-admin-fromcfg")
+        finally:
+            del os.environ["ANTHROPIC_ADMIN_KEY_FILE"]
+            del os.environ["AGENT_CONFIG"]
+            os.unlink(cfg)
 
     def test_fetch_reconciliation_degrades_without_key(self):
         # no key + no requests needed: _get checks the key before importing requests,
         # so fetch_reconciliation returns a safe {"ok": False} note rather than raising.
         os.environ.pop("ANTHROPIC_ADMIN_KEY", None)
         os.environ["ANTHROPIC_ADMIN_KEY_FILE"] = "/nonexistent/admin/key/file"
+        os.environ["AGENT_CONFIG"] = "/nonexistent/agent/config.toml"
         try:
             out = au.fetch_reconciliation(days=7, today=date(2026, 6, 15))
         finally:
             del os.environ["ANTHROPIC_ADMIN_KEY_FILE"]
+            del os.environ["AGENT_CONFIG"]
         self.assertFalse(out["ok"])
         self.assertIn("no admin key", out["note"])
 
