@@ -494,6 +494,35 @@ Remaining peer deliverables: (2) incident→session_id extraction from the
 postmortems (positive set); (3) a no-operator_mark / not-flagged stratified ev
 sample (FP denominator).
 
+## Findings — round 15 (judge recall/FP substrate for the enforcement session, 2026-06-23)
+
+Deliverables (2) + (3) for cc:b77398f6 — the labeled sets it needs to validate its
+semantic behavior-judge (recall + false-positive rate) before labeling at scale.
+
+**(2) Positive set** — incident→session_id from the postmortem Provenance sections
+(`.172:~/.claude-personal/notes/incident-*.md`). 6 sessions, **all present in ev**:
+
+| date | behavior (peer's classes) | session_ref |
+|---|---|---|
+| 2026-06-05 | relitigation | cc:cff69449-…beb88 (+ mu:3dd40c3c1f84f278:session-1) |
+| 2026-06-08 | map_as_terrain (premise-misframe) | cc:80aea137-…b8553 |
+| 2026-06-12 | defend-on-correction / miscalibration | cc:511ff8ec-…c10619 |
+| 2026-06-17 | dismissiveness | cc:f85be7ce-…ce743a |
+| 2026-06-21 | scope_overreach | cc:9d85ebd5-…c2b859 |
+
+Classes are my read from the writeups (hints; the judge assigns). Two incidents
+(2026-05-31 workspace-contamination, 2026-06-15 cleanup-scope-creep) describe real
+behaviors but captured no in-band session UUID → unusable as labeled positives.
+
+**(3) FP denominator** — `scripts/fp_sample.py`: a deterministic (md5-ordered),
+stratified **120-session** presumed-clean negative sample (20 per fleet×tool-call
+band), excluding operator-marked sessions, faux, our meta-sessions, and the 6
+positives. Written to `.172:~/adherence-fp-sample.tsv`.
+
+Downstream: peer validates judge recall (over the 6) + FP rate (over the 120),
+then labels the corpus at scale; those `{session_ref, behavior, occurred}` labels
+become degradation.py's supervised target (it already joins on `session_ref`).
+
 ## Caveats
 - Benchmarks (`bench` in path) are excluded from both scripts by default.
 - mu `model='faux'` (FauxProvider test runs) must be excluded from any
