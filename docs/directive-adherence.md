@@ -113,6 +113,38 @@ The validation findings matter more than the raw rates:
 Aside: mu's native `spawn_worker` (5 uses) confirms the spawn path is also a tool,
 not only bash — ties back to the helper-spawn thread.
 
+## Findings — round 3 (heredoc / shell-write anti-patterns, 2026-06-22)
+
+Operator insight: cc frequently writes files via heredoc (`cat > f <<EOF`), runs code
+via `python - <<PY`, and emits large bash that can't be audited in the approval dialog
+(only a slice shows). Two harms: heredoc/shell writes **bypass the Write tool's
+Read-before-overwrite guard** (overwrite-blindness — esp. under zsh `noclobber`), and
+large heredocs are **unauditable** at approval time.
+
+Pure tool-stream classifiers (`scripts/violations.py`), % of tool-bearing sessions:
+
+| predicate | cc-real (85) | mu (357) |
+|---|---|---|
+| large_bash (>1200 chars) | 29% | 1% |
+| shell_file_write (`cat/echo/tee > file`) | 28% | 0% |
+| heredoc (`<<`) | 23% | 1% |
+| code_in_heredoc (`python/node <<`) | 11% | 1% |
+
+Reads:
+- **cc-specific** (~¼–⅓ of cc tool sessions; ~0 on mu, which uses native edit/write +
+  smaller bash). Cleanest, highest-signal, lowest-FP predicates so far.
+- They **overlap/correlate** (a large heredoc file-write trips heredoc + shell_file_write
+  + large_bash) — don't sum as independent.
+- **Best first enforcement candidate:** the fix is uncontroversial (Write tool instead of
+  `cat >`/heredoc; split large bash), and mu's ~0 rate shows it's avoidable. A
+  `PreToolUse(Bash)` hook that warns/blocks heredoc-file-writes + oversized commands is a
+  natural one-at-a-time A/B (with self-breadcrumb for treatment capture).
+- Caveats: `shell_file_write` is broad (catches `echo x > /tmp/marker`); `large_bash`
+  threshold (1200) is a first guess — both need a quick FP audit before enforcement.
+
+Behavior note: cc (this session) was using python-in-heredoc + `cat >`-heredoc for
+throwaways; switched to Write/Edit + small plain commands (auditable + clobber-safe).
+
 ## Caveats
 - Benchmarks (`bench` in path) are excluded from both scripts by default.
 - Local subset only (bench-heavy on cc); **not the real baseline** — that's the

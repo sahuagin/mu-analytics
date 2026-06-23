@@ -23,6 +23,12 @@ BASH = {"bash", "shell", "run"}
 
 RX_DANGER = re.compile(r"\brm\s+-[a-z]*r[a-z]*f|\brm\s+-[a-z]*f[a-z]*r|\bdd\s+.*\bof=|\bmkfs\b|:\(\)\s*\{", re.I)
 RX_FORCE = re.compile(r"\b(git|jj)\b.*(push\s+.*(--force|-f)\b|reset\s+--hard|push\s+--force|branch\s+-D)", re.I)
+# Heredoc / shell-write anti-patterns (operator insight 2026-06-22): heredocs are
+# unauditable in the approval dialog (only a slice shows) and shell file-writes
+# bypass the Write tool's Read-before-overwrite guard (overwrite-blindness).
+RX_HEREDOC = re.compile(r"<<-?\s*['\"\\]?[A-Za-z_]")  # a heredoc operator
+RX_CODE_HEREDOC = re.compile(r"\b(python3?|node|deno|ruby|perl|php|jq|psql|sqlite3|Rscript)\b[^\n]{0,60}<<")
+RX_SHELL_WRITE = re.compile(r"\b(cat|printf|echo)\b[^|\n]*>{1,2}\s*(?!/dev/null)[^\s&|>]|\btee\b\s+[^\s&|>-]", re.I)
 
 
 def _argval(args, *keys):
@@ -93,11 +99,25 @@ def violations(tools):
                 v.add("dangerous_bash")
             if RX_FORCE.search(cmd):
                 v.add("force_push")
+            if RX_HEREDOC.search(cmd):
+                v.add("heredoc")
+            if RX_CODE_HEREDOC.search(cmd):
+                v.add("code_in_heredoc")
+            if RX_SHELL_WRITE.search(cmd):
+                v.add("shell_file_write")
+            if len(cmd) > 1200:
+                v.add("large_bash")
     return v
 
 
 def run(name, files, parse):
-    PREDS = ["edit_before_read", "edit_loop", "dangerous_bash", "force_push"]
+    PREDS = [
+        # pure tool-stream (trust): heredoc/shell-write + bash hazards
+        "heredoc", "code_in_heredoc", "shell_file_write", "large_bash",
+        "dangerous_bash", "force_push", "edit_loop",
+        # context-state (noisy from logs; runtime-only — see docs)
+        "edit_before_read",
+    ]
     n_tool = 0
     counts = {p: 0 for p in PREDS}
     for f in files:
