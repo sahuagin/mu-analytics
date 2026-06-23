@@ -17,7 +17,7 @@ python_interpreter_path = "/usr/local/bin/python3.11"
 # Consolidated per-machine session archive. Both fleets' raw logs live under it:
 #   <ai-sessions>/mu/<machine>/events/<daemon>/session-*.jsonl   (mu, see mu_events_root)
 #   <ai-sessions>/claude/<machine>/{projects,experiments}/.../<id>.jsonl  (cc, see cc_log_roots)
-# machine = threadripper, aiteam, ... — discovery spans every machine present.
+# machine = host-a, host-b, ... — discovery spans every machine present.
 
 # mu raw-event root: parent of the per-machine dirs. refresh.sh loops
 # `mu analytics compact --events-dir <root>/<machine>/events` over each machine,
@@ -91,3 +91,16 @@ vllm          = "free"             # local, self-hosted
 [cost_kind.model]                  # overrides that win over the provider default
 faux    = "free"                   # mu's fake provider, recorded under anthropic_api
 unknown = "free"
+
+# ── Directive-adherence study (optional) ─────────────────────────────────
+# Study-specific labeled sets for scripts/fp_sample.py. The real session ids are
+# PRIVATE (an operator's incident corpus) and live ONLY in the gitignored
+# config.toml — keep them out of this tracked template. Empty here by design:
+# with no positives/meta_sessions, fp_sample.py builds the stratified FP-negative
+# sample over ALL presumed-clean sessions.
+[adherence]
+# incident session_ref -> behavior-class label (the labeled positive set)
+positives = {}
+# id substrings to exclude from the clean negative sample (e.g. the research
+# sessions that ran the study itself, plus each positive's id)
+meta_sessions = []

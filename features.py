@@ -54,16 +54,37 @@ gaps AS (
     SELECT session, count(*) FILTER (WHERE gap_ms > 300000) AS gaps_over_5m
     FROM (SELECT session, ts - lag(ts) OVER (PARTITION BY session ORDER BY id) AS gap_ms FROM ev)
     GROUP BY session
+),
+ctx AS (
+    -- Per-turn context size, unified across fleets: mu = context_assembly
+    -- token_count_estimate, cc = assistant-turn usage (input + cache). init = first
+    -- turn (≈ system context), max = peak. The H4/context-rot substrate (round 13).
+    SELECT session, max(c) AS max_ctx, arg_min(c, eid) AS init_ctx
+    FROM (
+        SELECT session, id AS eid,
+               CASE WHEN fleet='mu' AND kind='context_assembly'
+                        THEN json_extract(payload,'$.token_count_estimate')::BIGINT
+                    WHEN fleet='cc' AND kind='assistant_message_event'
+                        THEN COALESCE(json_extract(payload,'$.message.usage.input_tokens')::BIGINT,0)
+                           + COALESCE(json_extract(payload,'$.message.usage.cache_read_input_tokens')::BIGINT,0)
+                           + COALESCE(json_extract(payload,'$.message.usage.cache_creation_input_tokens')::BIGINT,0)
+               END AS c
+        FROM ev
+        WHERE (fleet='mu' AND kind='context_assembly')
+           OR (fleet='cc' AND kind='assistant_message_event')
+    ) WHERE c > 0 GROUP BY session
 )
 SELECT tt.fleet, tt.session, tt.model, tt.provider, tt.started_ms,
        tt.input_tok, tt.output_tok, tt.cache_read_tok, tt.cache_write_tok, tt.n_tasks,
        COALESCE(d.calls, 0) AS calls, COALESCE(d.wall_p50, 0) AS wall_p50,
        COALESCE(d.wall_p95, 0) AS wall_p95, COALESCE(t.tool_calls, 0) AS tool_calls,
-       COALESCE(g.gaps_over_5m, 0) AS gaps_over_5m
+       COALESCE(g.gaps_over_5m, 0) AS gaps_over_5m,
+       COALESCE(c.max_ctx, 0) AS max_ctx, COALESCE(c.init_ctx, 0) AS init_ctx
 FROM tt
 LEFT JOIN done d USING (session)
 LEFT JOIN tools t USING (session)
 LEFT JOIN gaps g USING (session)
+LEFT JOIN ctx c USING (session)
 """
 
 # The numeric feature columns degradation_ml / anomaly_worklist feed to the model.
@@ -81,6 +102,8 @@ NUMERIC = [
     "gaps_over_5m",
     "tool_calls",
     "n_tasks",
+    "max_ctx",
+    "init_ctx",
 ]
 
 
