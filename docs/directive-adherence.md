@@ -318,6 +318,51 @@ month:
 The only maturity gate that bites is compaction (June+, small-n); context-disparity
 is feature-stable across the corpus.
 
+## Findings — round 10 (powered round-5 outcome re-test on the typed `ev` layer, 2026-06-23)
+
+`scripts/outcome_powered.py` (ev replacement for the raw-jsonl `outcome.py`; reuses
+`outcome.NEG` markers + `violations.violations()` verbatim). cc sessions with
+operator msgs + tools: **653**; overall marker rate **94.6 / 1k operator msgs**.
+
+**Hypothesis.** The round-5 local outcome findings replicate at power: (a) presence
+is an exposure artifact, rate is the honest metric; (b) H4 (rot-with-depth)
+non-monotonic; (c) heredoc carries a ~2.9× per-message frustration lift.
+
+**Results.**
+- by session size (n tools): presence 13→34→72→82% (confounded); **rate
+  134→207→93→79 /1k** — non-monotonic, declines for large sessions.
+- by max context (H4): presence 6→25→75%; **rate 75 → 282 → 84 /1k** (<40k /
+  40–150k / >150k) — a sharp **mid-context (40–150k) peak**, n=223, low at both ends.
+- predicate rate-lift (markers/msg with vs without): **heredoc 0.9×**,
+  code_in_heredoc 0.8×, shell_file_write 0.6×, large_bash 0.5×, edit_loop 0.9× —
+  **all ≤1.0×**.
+
+**Conclusions.**
+1. Exposure normalization **confirmed at power**: presence tracks length/depth;
+   rate does not rise monotonically. Round-5 method validated on 653 sessions.
+2. **H4 (monotonic rot with depth) refuted** — rate is non-monotonic. But the
+   round-5 40–150k spike **replicates and is now powered** (282/1k, n=223 vs the
+   old n=30): operator frustration peaks at *mid* context, not deep context. The
+   >150k drop is likely session-character (long autonomous runs have sparse, less
+   frustrated operator messages) — needs disaggregation, not yet causal.
+3. **The heredoc 2.9× lift does NOT replicate (0.9× at power, n=187).** Round-5's
+   "heredoc is the one surviving signal → strongest enforcement candidate" was a
+   small-n artifact. No tool-stream predicate predicts frustration at power (all
+   ≤1.0×); they track tool-heavy/autonomous session character. The auditability /
+   overwrite-safety case for a heredoc guard (round 3) stands on its own merits,
+   but the *outcome* correlation round 5 leaned on is gone.
+
+**Next.** Disaggregate the mid-context (40–150k) peak — is it rework-grind, and
+does the >150k drop coincide with autonomous/sparse-operator sessions or with
+compaction? Then `degradation.py` permutation importance as the proper
+multivariate estimate (does *any* feature predict the frustration/sentiment label
+once length, fleet, model are controlled?).
+
+Caveat: cc bench can't be path-excluded in `ev` (UUID-keyed post-conversion), but
+bench is scripted (≈0 operator markers) so it dilutes rates toward zero, not up;
+NEG markers carry FPs (`stop`/`no.`) that add roughly constant noise across bands,
+so the relative (non-monotonic) shape survives but absolute rates are soft.
+
 ## Caveats
 - Benchmarks (`bench` in path) are excluded from both scripts by default.
 - mu `model='faux'` (FauxProvider test runs) must be excluded from any
