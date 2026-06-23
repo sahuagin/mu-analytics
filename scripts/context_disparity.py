@@ -35,12 +35,25 @@ CC_CTX = (
 )
 MU_CTX = "json_extract(payload,'$.token_count_estimate')::BIGINT"
 
+# mu's FauxProvider (crates/mu-ai/src/faux.rs) test sessions — the mu analog of
+# cc bench. In the deployed data they surface as model='faux' (824 sessions, all
+# stamped provider_kind='anthropic_api', so they inflate that bucket ~7x). They
+# emit NO context_assembly, so this exclusion is a NO-OP for the disparity metric
+# (verified round 8) — kept for correctness and reused when graduating
+# task_telemetry-derived features (token/cost/provider mix), where faux DOES skew.
+FAUX_MU = (
+    "session NOT IN (SELECT DISTINCT session FROM ev WHERE fleet='mu' "
+    "AND kind='task_telemetry' AND (json_extract_string(payload,'$.model')='faux' "
+    "OR json_extract_string(payload,'$.provider_kind') IN ('faux','mock')))"
+)
 
-def per_session(con, fleet, kind, ctx_expr):
-    """(initial, max) per session, keeping only ctx>0 turns; >=2 turns required."""
+
+def per_session(con, fleet, kind, ctx_expr, extra=""):
+    """(initial, max) per session, keeping only ctx>0 turns; >=2 turns required.
+    `extra` is an optional extra WHERE predicate (e.g. the faux exclusion)."""
+    where = f"fleet='{fleet}' AND kind='{kind}'" + (f" AND {extra}" if extra else "")
     rows = con.execute(
-        f"WITH t AS (SELECT session, {ctx_expr} AS ctx, id FROM ev "
-        f"WHERE fleet='{fleet}' AND kind='{kind}') "
+        f"WITH t AS (SELECT session, {ctx_expr} AS ctx, id FROM ev WHERE {where}) "
         "SELECT arg_min(ctx,id) AS initial, max(ctx) AS maxc "
         "FROM t WHERE ctx>0 GROUP BY session HAVING count(*)>=2"
     ).fetchall()
@@ -67,7 +80,7 @@ def report(name, rows):
 def main():
     con = engine.connect()
     report("cc (typed ev)", per_session(con, "cc", "assistant_message_event", CC_CTX))
-    report("mu (typed ev)", per_session(con, "mu", "context_assembly", MU_CTX))
+    report("mu (typed ev, ex-faux)", per_session(con, "mu", "context_assembly", MU_CTX, FAUX_MU))
 
 
 if __name__ == "__main__":

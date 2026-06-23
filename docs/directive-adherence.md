@@ -263,8 +263,42 @@ Corpus via `ev`: **cc 918 / mu 4,610** distinct sessions (vs local 92/358 — ~1
 - Wire `compaction_assembly` as the compaction mark; resolve cc's compaction signal.
 - Coordinate slices with the other active session on mu-dialogue (avoid duplication).
 
+## Findings — round 8 (faux/test-provider audit on the mu side, 2026-06-23)
+
+**Hypothesis.** mu's round-7 baseline is contaminated by `FauxProvider`
+(`crates/mu-ai/src/faux.rs`, the echo/scripted test provider) — the mu analog of
+cc bench — so excluding it shifts the mu numbers.
+
+**Results.** Faux surfaces in the deployed data as **`model='faux'` = 824 mu
+sessions** (≈18% of the 4,610), and every one is stamped
+**`provider_kind='anthropic_api'`** — i.e. faux masquerades at the provider level,
+inflating the `anthropic_api` session bucket ~7× (952 reported vs ~128 real). But
+faux sessions emit **no `context_assembly` events** (echo/scripted never runs the
+real assembly pipeline), so **0** of them are among the 1,296 context-bearing mu
+sessions. mu disparity stats are **unchanged** after exclusion: initial med 4,348
+/ p90 9,386, max med 8,943, growth 2.01×.
+
+**Conclusions.**
+1. The context-trajectory metric is **structurally immune** to faux. The ~6×
+   mu↔cc disparity is now confound-checked on both sides: cc bench can't dilute it
+   upward (round 7), mu faux doesn't enter it at all (round 8). The disparity holds.
+2. Faux **does** heavily skew any `task_telemetry`-derived metric — 18% of mu
+   sessions, ~7× `anthropic_api` inflation. **Any** future feature over token
+   totals / cost / provider mix / raw session counts MUST filter `model='faux'`
+   (and `provider_kind in ('faux','mock')`). The round-7 "mu 4,610 sessions"
+   headcount itself carries ~824 faux → real mu ≈ 3,786.
+3. Baked the faux exclusion into `context_disparity.py` (`FAUX_MU`) — a no-op for
+   the disparity metric, but the canonical "real mu sessions" predicate to reuse.
+
+**Next.** Graduate per-turn context-trajectory into `features.py` over `ev` with
+the faux filter (+ a cc bench filter) as a shared "real sessions" predicate, then
+run `degradation.py` permutation importance (H4 vs H5) and the powered,
+exposure-normalized heredoc-2.9× / depth-curve re-test.
+
 ## Caveats
 - Benchmarks (`bench` in path) are excluded from both scripts by default.
+- mu `model='faux'` (FauxProvider test runs) must be excluded from any
+  task_telemetry-derived metric (round 8); it does not affect context_assembly.
 - Local subset only (bench-heavy on cc); **not the real baseline** — that's the
   full ~/ai-sessions corpus on .172.
 - Cross-fleet absolute token comparison is rough (different accounting).
