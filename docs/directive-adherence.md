@@ -184,6 +184,33 @@ spike need .172 power; only exposure controlled (degradation.py's multivariate r
 the proper estimate); marker FPs inflate the base rate (`stop`/`no.` over-fire); per-message
 count is rough.
 
+## Findings — round 6 (windowed / temporal, 2026-06-22)
+
+Sessions have WINDOWS, not one good/bad label (operator: good open → rework+frustration
+arc → exhaustion-leave ~4-5am → gap → recovery-probe ~10am; good sessions also left
+overnight, so the gap alone isn't the signal — the surrounding behavior is). Per-session
+scalars (round 5) wash this out. `scripts/windowed.py`: per-message timestamps (present on
+all cc sessions), STEER-vs-REWORK marker split, within-session trajectory, leave/return gap
+signature.
+
+Local result (23 cc sessions ≥6 msgs — small + short):
+- REWORK 1st-half 0.067 / 2nd-half 0.045 (rose 4/23) — **no late-degradation arc locally**.
+- STEER 0.235 (≫ rework), flat — operator language is mostly normal directive **steering**,
+  not frustration; round-5 markers conflated them.
+- gaps: 16; leave-hour mode **8am** (not the 4-5am of canonical bad days); rework/steer
+  before-gap 43%; **recovery-probe after-gap 0%**.
+- **Conclusion:** the windowing MECHANISM works, but the phenomenon (degradation arcs, 4am
+  leaves, recovery probes) **isn't in the local corpus — it's on .172** (long day-sessions).
+
+## Convergence (end of local prototyping, 2026-06-22)
+Three independent rounds all point the same way: **the local jail subset is too small/short/
+recent to test the real phenomena** (context-rot, degradation arcs, outcome correlation).
+What IS done and validated locally: the toolkit (`adherence_probe`/`violations`/`outcome`/
+`windowed`), the methodology (FP-audit; exposure normalization; steering-vs-rework split;
+windowing), and the structural facts (mu ~5k vs cc ~27k initial; heredoc the one
+normalization-surviving signal). The powered, length-controlled, windowed run belongs on
+**.172** via `features.py`/`degradation.py` + the windowed probe over `~/ai-sessions`.
+
 ## Caveats
 - Benchmarks (`bench` in path) are excluded from both scripts by default.
 - Local subset only (bench-heavy on cc); **not the real baseline** — that's the
