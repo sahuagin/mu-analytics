@@ -459,6 +459,41 @@ Deploying the `max_ctx` graduation is a separate sign-off step.
   enforcement by *mechanism* (predicate→0 under a hook), not by an outcome model
   the data won't support.
 
+## Findings — round 14 (authoritative per-predicate prevalence at power, 2026-06-23)
+
+`scripts/violations_powered.py` (ev port of `violations.py`'s prevalence; reuses
+`violations()` + RX_* verbatim; mu faux-excluded). Deliverable (1/3) for the
+compliance-enforcement session (cc:b77398f6) — authoritative base rates it cites
+over its ssh-grep numbers.
+
+tool-bearing sessions (faux-excluded): **cc=741 / mu=1,398**. % of those sessions:
+
+| predicate | cc% | mu% | cc:mu |
+|---|---|---|---|
+| heredoc | 32.0 | 3.8 | ~8× |
+| code_in_heredoc | 10.9 | 2.8 | ~4× |
+| shell_file_write | 22.5 | 1.8 | ~12× |
+| large_bash | 35.9 | 3.1 | ~12× |
+| dangerous_bash | 11.1 | 0.8 | ~14× |
+| force_push | 1.8 | 0.0 | — |
+| edit_loop | 21.5 | 1.1 | ~20× |
+| edit_before_read | 39.5 | 3.0 | ~13× |
+
+- The cc↔mu anti-pattern gap is **8–20× per predicate** — starker than the peer's
+  independent Run1 (cc 2.4–4.6×), because this is powered + faux-excluded. Same
+  direction, stronger magnitude; corroborates the structural disparity (rounds 7–9).
+- **mu=1,398 cross-validates** the peer's independent ssh-grep count (1,397).
+- Trust the **pure tool-stream** predicates (heredoc/large_bash/shell_file_write/
+  dangerous_bash/force_push/edit_loop). `edit_before_read` (39.5%) **over-counts**
+  from logs (round 2 caveat: content can enter context via Grep/attachments the
+  tool-stream doesn't expose) — a runtime/hook signal, not a clean log classifier.
+- Powered cc rates run higher than the local subset (heredoc 23→32%, large_bash
+  29→36%, edit_before_read 29→40%): the local corpus was bench-diluted.
+
+Remaining peer deliverables: (2) incident→session_id extraction from the
+postmortems (positive set); (3) a no-operator_mark / not-flagged stratified ev
+sample (FP denominator).
+
 ## Caveats
 - Benchmarks (`bench` in path) are excluded from both scripts by default.
 - mu `model='faux'` (FauxProvider test runs) must be excluded from any
