@@ -28,7 +28,14 @@ RX_FORCE = re.compile(r"\b(git|jj)\b.*(push\s+.*(--force|-f)\b|reset\s+--hard|pu
 # bypass the Write tool's Read-before-overwrite guard (overwrite-blindness).
 RX_HEREDOC = re.compile(r"<<-?\s*['\"\\]?[A-Za-z_]")  # a heredoc operator
 RX_CODE_HEREDOC = re.compile(r"\b(python3?|node|deno|ruby|perl|php|jq|psql|sqlite3|Rscript)\b[^\n]{0,60}<<")
-RX_SHELL_WRITE = re.compile(r"\b(cat|printf|echo)\b[^|\n]*>{1,2}\s*(?!/dev/null)[^\s&|>]|\btee\b\s+[^\s&|>-]", re.I)
+# A real file-write redirect: a `>`/`>>` NOT preceded by a fd digit (`2>`) or `&`,
+# target is a path or a filename.ext, excluding /dev/*. Plus `tee <file>`. The loose
+# v1 (echo|cat anywhere + a later `>`) was FP-heavy on `… 2>/dev/null` (FP-audit
+# 2026-06-22) — heredoc is the clean signal; this is the noisier secondary one.
+RX_SHELL_WRITE = re.compile(
+    r"(?<![0-9&])>{1,2}\s*(?!/dev/)(?!/tmp)(?!/var/tmp)(?!\$\{?TMP)(?!&)([~./][^\s&|;>]*|[A-Za-z][\w.-]*\.[A-Za-z][\w.]*)|\btee\s+(?!-)[^\s&|;>]",
+    re.I,
+)
 
 
 def _argval(args, *keys):
