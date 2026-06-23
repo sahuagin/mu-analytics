@@ -211,6 +211,58 @@ windowing), and the structural facts (mu ~5k vs cc ~27k initial; heredoc the one
 normalization-surviving signal). The powered, length-controlled, windowed run belongs on
 **.172** via `features.py`/`degradation.py` + the windowed probe over `~/ai-sessions`.
 
+## Findings — round 7 (powered, on the TYPED `ev` layer, 2026-06-23)
+
+**Method reset (the load-bearing correction).** Rounds 1–6 hand-globbed raw jsonl
+(`adherence_probe.py`). That is the wrong layer, and terrain proved it: the cc
+archive's first line is a session-init header (no `message.usage`), so the probe
+ate a `None` and crashed; a mu `supervisor.jsonl` first line isn't even JSON. The
+deployed pipeline already solves this — it unifies both fleets into the typed
+mu-core `SessionEvent` stream: **cc** via `cc_telemetry.py` (typed parse through
+the `mu_anthropic_py` pyo3 wheel → `cc_events_out/claude-code/*.jsonl`), **mu**
+native, both registered in `engine.py`'s DuckDB **`ev`** view. All adherence
+signals now compute over `ev` (or `cc_telemetry`/`mu-bridge` typed events), never
+hand-parsed dicts. `adherence_probe.py` is retained as the round-1 record but
+**deprecated**; its `ev` replacement is `scripts/context_disparity.py`.
+
+**Hypothesis.** The structural mu↔cc initial-context disparity (round 1: mu ~5k
+vs cc ~27k, on 92/358 local sessions) replicates at power on the full corpus when
+measured over the typed `ev` view.
+
+**Results** (`scripts/context_disparity.py`, `ev` on threadripper; per-turn ctx =
+cc `assistant_message_event.message.usage` [input+cache_read+cache_creation], mu
+`context_assembly.token_count_estimate`):
+
+| fleet | sessions (≥2 ctx turns) | initial (med / p90) | max (med / p90 / max) | growth |
+|---|---|---|---|---|
+| cc (typed ev) | 735 | **25,999** / 37,249 | 68,924 / 607,455 / 999,071 | 3.24× |
+| mu (typed ev) | 1,296 | **4,348** / 9,386 | 8,943 / 40,868 / 245,140 | 2.01× |
+
+Corpus via `ev`: **cc 918 / mu 4,610** distinct sessions (vs local 92/358 — ~10×/13×).
+
+**Conclusions.**
+1. **Disparity confirmed and slightly wider: ~6×** (4,348 vs 25,999) at 10–13× the
+   sample. Structural, not a small-n artifact. The mu↔cc context-disparity thesis
+   (H4 substrate) holds at power.
+2. cc growth **1.62×→3.24×**: the local subset was bench-diluted (bench is flat
+   ~1.0× growth); real cc sessions grow ~3×. Bench can't be path-excluded in `ev`
+   (sessions are keyed by UUID post-conversion), but bench would only pull cc
+   *down* toward its ~19k/1.0× floor — so the disparity is, if anything, understated.
+3. **Robust compaction is now in reach:** mu emits explicit `compaction_assembly`
+   events (136) carrying `tokens_before`/`tokens_after` — round-1 plan item 1, no
+   longer dependent on the unreliable cache-drop heuristic. cc shows no explicit
+   compaction kind in `ev` (open: does cc_telemetry emit one, or is it absent?).
+
+**Next iteration.**
+- Graduate per-turn context-trajectory into `features.py` as real columns
+  (`initial_ctx`, `max_ctx`, `growth`) over `ev`, so `degradation.py` permutation
+  importance can formally test H4 (rot rises with depth) vs H5 (rule half-life) —
+  the proper multivariate estimate the round-5 exposure-normalization only gestured at.
+- Re-test the round-5 **heredoc 2.9× per-message frustration lift** and the
+  non-monotonic H4 depth curve at power (exposure-normalized) on the now-powered corpus.
+- Wire `compaction_assembly` as the compaction mark; resolve cc's compaction signal.
+- Coordinate slices with the other active session on mu-dialogue (avoid duplication).
+
 ## Caveats
 - Benchmarks (`bench` in path) are excluded from both scripts by default.
 - Local subset only (bench-heavy on cc); **not the real baseline** — that's the
