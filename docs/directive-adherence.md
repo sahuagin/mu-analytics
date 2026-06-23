@@ -418,6 +418,47 @@ input_tok, output_tok, cost_usd…) are **not interpretable under negative R²**
 usage), re-run `degradation.py`; if R² stays ≤0 and `max_ctx` doesn't carry it, H4
 is **multivariate-refuted** — consistent with the univariate non-monotonicity.
 
+## Findings — round 13 (graduate context-depth → H4 multivariate test, 2026-06-23)
+
+Graduated per-turn context-depth into `features.py` (`ctx` CTE + `max_ctx` /
+`init_ctx` in `NUMERIC`; unified ev extraction: mu `context_assembly`, cc
+assistant-turn usage). Smoke OK (cc sample `max_ctx`=999,071). Re-ran
+`degradation.py`.
+
+**Results.** Same coverage (457 joined). **R² = −0.079** (was −0.095 without
+context — both negative, no OOF skill). `max_ctx` ranks 5th in permutation
+importance (0.089) but that is **uninterpretable under negative R²**.
+
+**Conclusions.**
+1. **H4 multivariate-refuted at power.** Adding context-depth does not give the
+   model predictive skill on operator sentiment; its apparent importance is noise
+   under a no-skill model. Consistent with the univariate non-monotonicity
+   (rounds 10–11).
+2. **No telemetry signature predicts operator sentiment** — even with context-depth.
+   The outcome (operator frustration/sentiment) is **not telemetry-predictable** at
+   power with this feature set.
+3. **Strategic consequence:** enforcement testing should use the **deterministic
+   mechanism check** (does a blocking hook drive its violation predicate → 0?), NOT
+   outcome-prediction (no signal) — this overturns round 5's outcome-lift framing
+   for picking enforcement candidates (heredoc).
+
+Process note: `features.py` (a deployed shared file) was modified **in-workspace
+only** and exercised via a shadow copy on the host; **not pushed/deployed**.
+Deploying the `max_ctx` graduation is a separate sign-off step.
+
+## Synthesis (rounds 7–13, powered on .172)
+- **Robust positive:** the structural mu↔cc initial-context disparity (~6×: mu ~4.3k
+  vs cc ~26k) — the substrate for "minimal context adheres better" — holds at power,
+  confound-checked against cc bench, mu faux, and the maturity window.
+- **Robust negative:** no objective telemetry signature (including context-depth)
+  predicts operator sentiment at power. The univariate "outcome" signals are
+  exposure/operator-density confounds or small-n artifacts; the round-5 heredoc 2.9×
+  enforcement candidate collapses (0.9×); H4 is refuted univariately *and*
+  multivariately.
+- **Direction:** measure the *cause* (context disparity — done) and evaluate
+  enforcement by *mechanism* (predicate→0 under a hook), not by an outcome model
+  the data won't support.
+
 ## Caveats
 - Benchmarks (`bench` in path) are excluded from both scripts by default.
 - mu `model='faux'` (FauxProvider test runs) must be excluded from any
