@@ -176,19 +176,23 @@ No system install / no pip — `cc_telemetry.py` adds `lib/` to `sys.path` itsel
 
 ## Deployment
 
-Runs on the analytics host (default `10.1.1.172`) — there is **no manual copy
-step**. A cron wrapper, `~/mu-stats/mu-analytics-refresh.sh`, fires every 15 min
-and:
+Runs on the analytics host (default `10.1.1.172`). Two separate things happen
+there — **regenerate** is automatic; **deploy** (pulling new code) is deliberate.
 
-1. fast-forwards the shared checkout `~/src/public_github/mu-analytics` to
-   `main@origin` **only when its working copy is clean** — a dirty dev tree is
-   left untouched, never clobbered;
-2. runs `refresh.sh` → `gen_dashboard.py` → `dist/`, served by nginx.
+- **Regenerate (cron, automatic).** A wrapper (`~/mu-stats/mu-analytics-refresh.sh`;
+  versioned copy at `ops/refresh-cron.sh`) runs every 15 min and rebuilds the
+  dashboard — `refresh.sh` → `gen_dashboard.py` → `dist/`, served by nginx — off
+  **whatever is currently checked out**. Cron has **no GitHub auth** (by design —
+  no keys live on the host), so it does **not** pull new code; it only re-renders.
+- **Deploy (manual).** To ship a merge, run `just deploy` (or, on the host,
+  `jj git fetch && jj new main@origin`) **with your ssh-agent forwarded**. The
+  wrapper then fast-forwards the checkout to `main@origin` when clean (a dirty dev
+  tree is left untouched, never clobbered) and regenerates. Your keys stay on your
+  machine — agent forwarding, nothing stored on the host. Override the host with
+  `MU_ANALYTICS_HOST`.
 
-So **deploying = merging to `main`**: the next cron run picks it up within 15 min.
-`just deploy` triggers the same wrapper immediately to skip the wait (override the
-host with `MU_ANALYTICS_HOST`). If the host checkout is mid-edit (dirty), the
-auto-sync is skipped — land the work or `jj new main@origin` there and it resumes.
+So **merging to `main` does not auto-deploy** — it's a deliberate `just deploy`.
+After that, cron keeps the freshly-synced dashboard re-rendered.
 
 Host runtime deps: `tq` (config reads, incl. `[anthropic].admin_key` for the cost
 panel) and the canonical `python3` + `duckdb` (the `py` var in the justfile). Quick

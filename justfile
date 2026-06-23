@@ -107,9 +107,9 @@ build-parsers: build-anthropic-parser build-events-parser
 # Host running the dashboard cron (see "Deployment" in the README).
 deploy_host := env_var_or_default("MU_ANALYTICS_HOST", "10.1.1.172")
 
-# Deploy now, skipping the 15-min cron: SSH the host wrapper to sync to main + regenerate (details in README → Deployment).
+# Deploy a merge: SSH with agent forwarding (-A) so the host wrapper can fetch with YOUR keys (none stored on the host), then sync to main + regenerate. See README → Deployment.
 deploy:
-    ssh {{deploy_host}} /home/tcovert/mu-stats/mu-analytics-refresh.sh
+    ssh -A {{deploy_host}} /home/tcovert/mu-stats/mu-analytics-refresh.sh
 
 # ── PR flow (jj-aware) ─────────────────────────────────────────────────────
 
