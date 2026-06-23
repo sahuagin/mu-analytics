@@ -295,6 +295,29 @@ the faux filter (+ a cc bench filter) as a shared "real sessions" predicate, the
 run `degradation.py` permutation importance (H4 vs H5) and the powered,
 exposure-normalized heredoc-2.9× / depth-curve re-test.
 
+## Findings — round 9 (corpus maturity / timeline scoping, 2026-06-23)
+
+The mu corpus is mu's whole logged life — only **2026-05 → 2026-06** — so
+feature-presence is time-gated and must not be read as behavior. Per first-session
+month:
+
+| month | mu sessions | with ctx_assembly | with compaction | faux |
+|---|---|---|---|---|
+| 2026-05 | 1,708 | 1,635 (96%) | 0 | 744 |
+| 2026-06 | 2,903 | 2,743 (94%) | 32 | 80 |
+
+- **context_assembly is present throughout** (≥94% both months) — it predates the
+  logged corpus, so the disparity metric (rounds 7–8) needs **no** maturity
+  date-gate. The ~6× result stands unscoped.
+- **Compaction is a June feature** (May 0 → June 32 sessions). It's recent and
+  rarely triggered; **scope all compaction analysis to June+ and treat n≈32 as
+  small**. May's zero is feature-absence, not "mu chose not to compact."
+- **faux is development-era-heavy** (May 744 → June 80) — consistent with May being
+  mu's heavy build/test phase. Already filtered from task_telemetry metrics (round 8).
+
+The only maturity gate that bites is compaction (June+, small-n); context-disparity
+is feature-stable across the corpus.
+
 ## Caveats
 - Benchmarks (`bench` in path) are excluded from both scripts by default.
 - mu `model='faux'` (FauxProvider test runs) must be excluded from any
