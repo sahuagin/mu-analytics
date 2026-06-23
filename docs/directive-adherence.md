@@ -70,7 +70,51 @@ Reads:
    explicit events** (mu has them; cc `isCompactSummary`) and test the file-split
    hypothesis. Do not trust the cache-drop count yet.
 
+## Directive-entry timeline (treatment substrate)
+
+From the jj history of the doc files:
+- **cc** (`~/.claude`): base config **2026-06-18**; pre-edit-gate + model-selection both **2026-06-22**.
+- **mu** (`~/.config/mu`): base **2026-06-09/10** (initial + discover/skill calibration); model-selection **2026-06-22**.
+
+Power note: the *recent* (today) directives have ~no "after" sessions yet, and the
+none→doc shift needs the historic corpus on **.172** that straddles these dates.
+Local mtimes are also unreliable (`stat` returned bad values). So **none→doc is
+.172-bound**; locally we measure age-independent base rates instead.
+
+## Findings — round 2 (violation base rates, local subset, 2026-06-22)
+
+`scripts/violations.py` (benchmarks excluded), per session with tool calls:
+
+| predicate | cc-real (85) | mu (357) |
+|---|---|---|
+| edit_before_read | 29% (Edit-only 27%) | 1% |
+| edit_loop (≥5 edits, same file) | 23% | 0% |
+| dangerous_bash (`rm -rf` etc.) | 10% | 0% |
+| force_push / reset --hard | 2% | 0% |
+
+The validation findings matter more than the raw rates:
+1. **mu near-zeros are REAL, not a name artifact.** mu vocab: read 1391, grep 1063,
+   bash 449, code_recall 254, discover 59, edit 56, write 5, `spawn_worker` 5. Its
+   mix is investigative + native (discover/code_recall/memory_recall), so it shells
+   bash + edits far less than cc. → normalize cross-fleet rates by **edit-bearing**
+   sessions, not all.
+2. **`edit_before_read` is a poor retroactive classifier.** Write-new (25) vs
+   Edit-existing (23) split still leaves 27%, and even that over-counts: the rule cc
+   enforces is "edit a file whose CONTENT isn't in context," and content enters via
+   Grep/attachments/prior turns the tool-stream log doesn't expose. **H1 neither
+   confirmed nor refuted** — needs runtime state we don't have in the log.
+3. **Methodological rule:** classify cleanly only PURE tool-stream predicates
+   (force_push, dangerous_bash[narrow], edit_loop). CONTEXT-STATE predicates
+   (edit_before_read, missing-discovery) over-count from logs → enforce/measure
+   them at RUNTIME (hooks), not in the log sweep.
+4. `dangerous_bash` 10% = "ran an `rm -rf`-ish command," not necessarily dangerous
+   (`rm -rf build/` is routine) — narrow before trusting.
+
+Aside: mu's native `spawn_worker` (5 uses) confirms the spawn path is also a tool,
+not only bash — ties back to the helper-spawn thread.
+
 ## Caveats
+- Benchmarks (`bench` in path) are excluded from both scripts by default.
 - Local subset only (bench-heavy on cc); **not the real baseline** — that's the
   full ~/ai-sessions corpus on .172.
 - Cross-fleet absolute token comparison is rough (different accounting).

@@ -89,12 +89,13 @@ def summarize(name, files, traj):
 
 
 def main():
-    cc = glob.glob(os.path.expanduser("~/.claude/projects/*/*.jsonl"))
-    cc_bench = [f for f in cc if "bench" in f]
-    cc_real = [f for f in cc if "bench" not in f]
+    # Benchmarks excluded (path contains 'bench') — a flat control population, not
+    # real work. The cc-bench floor (~19k initial) is recorded in the research log;
+    # pass INCLUDE_BENCH=1 to resurface it for a one-off.
+    cc = [f for f in glob.glob(os.path.expanduser("~/.claude/projects/*/*.jsonl"))
+          if os.environ.get("INCLUDE_BENCH") or "bench" not in f]
     mu = glob.glob(os.path.expanduser("~/.local/share/mu/events/*/session-*.jsonl"))
-    summarize("cc-real", cc_real, cc_trajectory)
-    summarize("cc-bench", cc_bench, cc_trajectory)
+    summarize("cc-real", cc, cc_trajectory)
     summarize("mu", mu, mu_trajectory)
 
 
