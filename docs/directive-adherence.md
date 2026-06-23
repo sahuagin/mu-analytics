@@ -391,6 +391,33 @@ artifact**: many operator messages spread the markers thin.
    model simultaneously; ask whether context-depth has *independent* signal on a
    proper sentiment label). That is round 12.
 
+## Findings — round 12 (multivariate baseline at power — `degradation.py`, 2026-06-23)
+
+Ran the proper multivariate estimate (`degradation.py`: HistGradientBoosting
+predicts SIGNED operator-sentiment net=(pos−neg)/100msg from telemetry; 5-fold OOF,
+permutation importance) on the deployed pipeline at power.
+
+**Results.** Coverage: telemetry **3,635** sessions, **481** sentiment-labeled,
+**457 joined** (3,178 unattended/no operator language). **Out-of-fold R² = −0.095**
+(worse than the mean), MAE 30.5 net/100msg. Top permutation features (wall_p95,
+input_tok, output_tok, cost_usd…) are **not interpretable under negative R²**.
+
+**Conclusions.**
+1. **Objective telemetry does NOT predict operator sentiment at power** (no OOF
+   skill). The univariate frustration signals (rounds 5/10/11) do **not** cohere
+   into an objective multivariate signature with the current feature set.
+2. **But `max_ctx`/context-depth is NOT in `features.NUMERIC`** (calls, tokens,
+   cost, wall, gaps, tool_calls, provider/model/fleet). So this is *not yet* an H4
+   test — it's "do the existing features predict sentiment," and they don't.
+3. The study's shape is now clear: the **robust** result is structural — the mu↔cc
+   context disparity (rounds 7–9); the **telemetry→outcome predictive link is
+   weak-to-absent** (rounds 10–12).
+
+**Next (round 13).** Graduate per-turn context-depth into `features.py` over `ev`
+(unified: mu `context_assembly.token_count_estimate`, cc `assistant_message_event`
+usage), re-run `degradation.py`; if R² stays ≤0 and `max_ctx` doesn't carry it, H4
+is **multivariate-refuted** — consistent with the univariate non-monotonicity.
+
 ## Caveats
 - Benchmarks (`bench` in path) are excluded from both scripts by default.
 - mu `model='faux'` (FauxProvider test runs) must be excluded from any
