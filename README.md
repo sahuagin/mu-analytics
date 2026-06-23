@@ -174,6 +174,28 @@ No system install / no pip — `cc_telemetry.py` adds `lib/` to `sys.path` itsel
 
 ---
 
+## Deployment
+
+Runs on the analytics host (default `10.1.1.172`) — there is **no manual copy
+step**. A cron wrapper, `~/mu-stats/mu-analytics-refresh.sh`, fires every 15 min
+and:
+
+1. fast-forwards the shared checkout `~/src/public_github/mu-analytics` to
+   `main@origin` **only when its working copy is clean** — a dirty dev tree is
+   left untouched, never clobbered;
+2. runs `refresh.sh` → `gen_dashboard.py` → `dist/`, served by nginx.
+
+So **deploying = merging to `main`**: the next cron run picks it up within 15 min.
+`just deploy` triggers the same wrapper immediately to skip the wait (override the
+host with `MU_ANALYTICS_HOST`). If the host checkout is mid-edit (dirty), the
+auto-sync is skipped — land the work or `jj new main@origin` there and it resumes.
+
+Host runtime deps: `tq` (config reads, incl. `[anthropic].admin_key` for the cost
+panel) and the canonical `python3` + `duckdb` (the `py` var in the justfile). Quick
+cost-panel health check on the host: `python3 admin_usage.py` → `"ok": true`.
+
+---
+
 ## Open / next
 
 - **Display — DONE** (`gen_dashboard.py` → `dist/`). Dark ECharts dashboard:

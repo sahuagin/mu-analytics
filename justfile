@@ -102,6 +102,15 @@ build-events-parser: (_build-pyo3 "mu-events-py" "mu_events_py")
 # Build both typed pyo3 parsers into lib/.
 build-parsers: build-anthropic-parser build-events-parser
 
+# ── deploy ─────────────────────────────────────────────────────────────────
+
+# Host running the dashboard cron (see "Deployment" in the README).
+deploy_host := env_var_or_default("MU_ANALYTICS_HOST", "10.1.1.172")
+
+# Deploy now, skipping the 15-min cron: SSH the host wrapper to sync to main + regenerate (details in README → Deployment).
+deploy:
+    ssh {{deploy_host}} /home/tcovert/mu-stats/mu-analytics-refresh.sh
+
 # ── PR flow (jj-aware) ─────────────────────────────────────────────────────
 
 # Bookmark current jj @ as <bookmark>, push, and open a PR. Extra args forward
