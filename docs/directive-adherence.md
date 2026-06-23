@@ -145,6 +145,45 @@ Reads:
 Behavior note: cc (this session) was using python-in-heredoc + `cat >`-heredoc for
 throwaways; switched to Write/Edit + small plain commands (auditable + clobber-safe).
 
+## Findings — round 4 (FP-audit of the heredoc/shell-write candidates, 2026-06-22)
+
+Sampled real cc hits before trusting round 3:
+- `shell_file_write` v1 was **FP-heavy** — matched `echo …; … 2>/dev/null` (producer + a
+  LATER redirect). Tightened: a `>`/`>>` not preceded by a fd digit/`&`, target a real path,
+  excluding `/dev/*` and `/tmp` scratch. Refined cc rate 23% — barely moved when excluding
+  `/tmp`, so most are genuine **non-scratch** writes (the overwrite concern is real).
+- `heredoc` (`<<`) is the clean, unambiguous lead (196 cmds; 44 with a code interpreter).
+- `large_bash`: cc bash cmd length median 382 / p90 1037 / p99 2517 / max 6117; `>1200` = top
+  ~7% of commands — defensible but a guessed threshold.
+Trustworthy candidates: heredoc + code_in_heredoc + large_bash; shell_file_write secondary.
+
+## Findings — round 5 (violation/context × outcome, 2026-06-22)
+
+Outcome = operator-frustration markers (scans.py MARKERS) in operator-typed cc text.
+First pass used PRESENCE (≥1 marker): every predicate ~2–3× lift, several 100%, frustration
+25%→96% with context — **all a session-LENGTH confound**: presence rises 26%→100% with tool
+count because long sessions have many operator messages and a flat ~0.7%/msg marker rate
+makes ≥1 near-certain.
+
+Re-ran **exposure-normalized** (markers per operator message):
+- by session size: rate FLAT-to-declining (607/577/651/122 per 1k) while presence went
+  26→100% → the gradient was pure exposure; big sessions aren't more frustrating per message.
+- by max context: rate 324 / 1111 / 327 per 1k (<40k / 40-150k / >150k) — **non-monotonic →
+  H4 (rot rises with depth) NOT supported once normalized.** (40-150k spike interesting but n=30.)
+- predicate rate-lift: **heredoc 2.9× (SURVIVES)**; large_bash 1.0×, shell_file_write 0.7×,
+  code_in_heredoc 0.7×, edit_loop 0.6× (collapse/reverse).
+
+Takeaways:
+1. PRESENCE is the wrong outcome metric — use per-message RATE + size control.
+2. Naive lifts were almost all exposure confounds. **Only `heredoc` survives** (~2.9×
+   elevated per-message frustration) → strongest real enforcement candidate so far.
+3. H4-as-stated unsupported in normalized local data; revisit on .172 with power.
+
+Caveats: small n (context bands n=23–32, size bands n=6–12) → heredoc 2.9× + the 40-150k
+spike need .172 power; only exposure controlled (degradation.py's multivariate regression is
+the proper estimate); marker FPs inflate the base rate (`stop`/`no.` over-fire); per-message
+count is rough.
+
 ## Caveats
 - Benchmarks (`bench` in path) are excluded from both scripts by default.
 - Local subset only (bench-heavy on cc); **not the real baseline** — that's the
