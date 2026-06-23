@@ -363,6 +363,34 @@ bench is scripted (≈0 operator markers) so it dilutes rates toward zero, not u
 NEG markers carry FPs (`stop`/`no.`) that add roughly constant noise across bands,
 so the relative (non-monotonic) shape survives but absolute rates are soft.
 
+## Findings — round 11 (disaggregating the mid-context peak, 2026-06-23)
+
+Broke the round-10 max-context bands down by operator density + marker concentration:
+
+| band | n | msgs/s | tools/s | msgs/tool | rate/1k | top5-mkr-share | sess-w-markers |
+|---|---|---|---|---|---|---|---|
+| <40k | 232 | 1 | 4 | 0.249 | 74.6 | 50% | 6% |
+| 40–150k | 223 | 1 | 15 | 0.100 | 282.2 | 24% | 26% |
+| >150k | 198 | 29 | 168 | 0.168 | 83.9 | 19% | 76% |
+
+**The round-10 ">150k = sparse autonomous" guess was wrong.** >150k sessions are
+the opposite — high engagement (median 29 operator msgs, 168 tools) — and **76%
+contain a frustration marker**. Their low per-message *rate* is a **dilution
+artifact**: many operator messages spread the markers thin.
+
+**Conclusions.**
+1. **Presence rises monotonically with context** (6→26→76%) = exposure. **Rate
+   peaks mid-context** (40–150k) and that peak is **broad-based** (top-5 sessions
+   only 24% of the band's markers, 26% of sessions affected) — a real signal, not
+   outliers: terse-instruction + heavy-work + dissatisfied.
+2. The per-message rate is **itself confounded by operator-message density**, which
+   varies systematically by band (msgs/tool 0.25 / 0.10 / 0.17) — a deeper confound
+   than round 5's exposure point. Neither presence nor rate alone is a clean outcome.
+3. **Univariate banding has reached its limit.** The honest estimate needs
+   `degradation.py`'s multivariate model (control length, operator-msg count, fleet,
+   model simultaneously; ask whether context-depth has *independent* signal on a
+   proper sentiment label). That is round 12.
+
 ## Caveats
 - Benchmarks (`bench` in path) are excluded from both scripts by default.
 - mu `model='faux'` (FauxProvider test runs) must be excluded from any
