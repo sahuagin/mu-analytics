@@ -390,13 +390,19 @@ _DELEGATION_KINDS = (
 )
 
 
-def delegations(con):
+def delegations(con, now_ms=None, stale_after_ms=6 * 60 * 60 * 1000):
     """Worker-orchestration slice for the Delegations page (was a stub): each spawned
     worker (pot/model/prompt) paired best-effort — by order within the orchestrator
     session, since the events carry no shared worker id — with its terminal event
     (exit_code / failed reason / timeout), plus the session's mailbox traffic.
     mu-native (cc emits no worker/mailbox events). Returns a Sessions-style filterable
-    worker list + outcome/mailbox aggregates."""
+    worker list + outcome/mailbox aggregates.
+
+    A spawn with no matching terminal event is only "running" while recent. Old
+    unmatched spawns are `unknown-stale`: the event log can no longer distinguish a
+    still-live worker from a missing terminal event, and showing May-old tests as
+    actively running makes the metric aim at the wrong target.
+    """
     kinds = "','".join(_DELEGATION_KINDS)
     rows = con.execute(
         f"SELECT fleet, session, kind, ts, payload FROM ev "
@@ -441,6 +447,11 @@ def delegations(con):
                     outcome, detail = "failed", tp.get("reason") or ""
                 else:  # worker_timeout
                     outcome, detail, elapsed = "timeout", "timed out", tp.get("elapsed_ms")
+            elif now_ms is None:
+                now_ms = int(datetime.datetime.now(tz=datetime.UTC).timestamp() * 1000)
+            if outcome == "running" and now_ms is not None and ts and now_ms - ts > stale_after_ms:
+                outcome = "unknown-stale"
+                detail = "no terminal event recorded"
             by_outcome[outcome] = by_outcome.get(outcome, 0) + 1
             workers.append(
                 {

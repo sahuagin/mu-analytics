@@ -87,6 +87,39 @@ class TestDelegations(unittest.TestCase):
         self.assertEqual(d["mailbox"]["consumed"], 1)
         self.assertEqual(d["mailbox"]["by_kind"], [{"kind": "task", "n": 1}])
 
+    def test_unmatched_old_worker_is_unknown_stale(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ev = os.path.join(tmp, "events", "d1", "session-1.jsonl")
+            os.makedirs(os.path.dirname(ev))
+            with open(ev, "w") as f:
+                f.write(
+                    json.dumps(
+                        _ev(
+                            1,
+                            "worker_spawned",
+                            {
+                                "pot_name": "p1",
+                                "model": "claude-opus-4-8",
+                                "pid": 1,
+                                "prompt_summary": "orphaned",
+                            },
+                        )
+                    )
+                    + "\n"
+                )
+            con = engine.connect(
+                sources=[
+                    (
+                        os.path.join(tmp, "events", "*", "*.jsonl"),
+                        "mu",
+                        engine._MU_DAEMON,
+                        engine._MU_SESSION,
+                    )
+                ]
+            )
+            d = panels.delegations(con, now_ms=_T0 + 7 * 60 * 60 * 1000)
 
-if __name__ == "__main__":
-    unittest.main()
+        self.assertEqual(d["workers"][0]["outcome"], "unknown-stale")
+        self.assertEqual(d["workers"][0]["detail"], "no terminal event recorded")
+        outcomes = {o["outcome"]: o["n"] for o in d["by_outcome"]}
+        self.assertEqual(outcomes, {"unknown-stale": 1})
