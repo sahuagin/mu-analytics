@@ -755,19 +755,25 @@ function markPoints(t){ // aggregate DATA.marks by date so same-day labels don't
   return [...byDate.values()].map(m=>{ const idx=t.findIndex(d=>d.date>=m.date), ti=idx<0?t.length-1:idx, avg=m.ratings.reduce((a,b)=>a+b,0)/m.ratings.length; return {idx:ti, rating:+avg.toFixed(1), count:m.ratings.length, note:m.notes.slice(0,3).join('\n---\n'), refs:m.refs, deg:t[ti].deg}; });
 }
 function trendChart(id,withMarks){ const c=mk(id); if(!c)return; const t=trendData(), mp=markPoints(t);
+  // incident reports + per-day automation findings placed on the trend's date axis
+  const xidx=dt=>{const i=t.findIndex(d=>d.date>=dt);return i<0?t.length-1:i;};
+  const inc=(DATA.incidents||[]).map(i=>({idx:xidx(i.date),title:i.title||'',pol:i.polarity}));
+  const au=(DATA.automation_by_day||[]).map(a=>({idx:xidx(a.date),count:a.count}));
+  const polC=p=>p==='positive'?'#33c9a3':'#e5534b';
   c.setOption({grid:{left:10,right:14,top:22,bottom:26,containLabel:true},
     tooltip:{...baseTooltip(),trigger:'axis',axisPointer:{type:'cross',crossStyle:{color:'#3a4350'},lineStyle:{color:'#3a4350'}},
-      formatter:ps=>{let s=`<b>${ps[0].axisValue}</b>`;ps.forEach(p=>{if(p.seriesName==='your rating')return; s+=`<br/>${p.marker}${p.seriesName}: ${p.seriesName==='degradation'?pct(p.value,1):money(p.value,p.value>=100?0:2)}`;});return s;}},
-    legend:{data:['cost/day','degradation'].concat(withMarks?['your rating']:[]),right:6,top:-2,itemWidth:14,itemHeight:8,textStyle:{color:LBL,fontSize:11,fontFamily:"'JetBrains Mono',monospace"},inactiveColor:'#3a4350'},
+      formatter:ps=>{let s=`<b>${ps[0].axisValue}</b>`;ps.forEach(p=>{if(p.seriesName==='your rating'||p.seriesName==='automation')return; s+=`<br/>${p.marker}${p.seriesName}: ${p.seriesName==='degradation'?pct(p.value,1):money(p.value,p.value>=100?0:2)}`;});const di=ps[0].dataIndex;inc.filter(x=>x.idx===di).forEach(x=>{s+=`<br/><span style="color:${polC(x.pol)}">◉ ${x.pol}</span> ${x.title.slice(0,50)}`;});const a=au.find(x=>x.idx===di);if(a)s+=`<br/>◆ automation: ${a.count}`;return s;}},
+    legend:{data:['cost/day','degradation'].concat(withMarks?['your rating']:[]).concat(au.length?['automation']:[]),right:6,top:-2,itemWidth:14,itemHeight:8,textStyle:{color:LBL,fontSize:11,fontFamily:"'JetBrains Mono',monospace"},inactiveColor:'#3a4350'},
     xAxis:{type:'category',data:t.map(d=>d.date.slice(5)),boundaryGap:false,axisLine:{lineStyle:{color:GRID}},axisTick:{show:false},axisLabel:{color:fgmute(),fontFamily:"'JetBrains Mono',monospace",fontSize:9.5,interval:3}},
     yAxis:[{type:'value',name:'$/day',nameTextStyle:{color:fgmute(),fontSize:10},axisLabel:{color:fgmute(),fontFamily:"'JetBrains Mono',monospace",fontSize:10,formatter:v=>'$'+v},splitLine:{lineStyle:{color:GRID}},axisLine:{show:false},axisTick:{show:false}},
            {type:'value',max:1,name:'degr.',nameTextStyle:{color:fgmute(),fontSize:10},axisLabel:{color:fgmute(),fontFamily:"'JetBrains Mono',monospace",fontSize:10,formatter:v=>(v*100)+'%'},splitLine:{show:false},axisLine:{show:false},axisTick:{show:false}}],
     series:[
-      {name:'cost/day',type:'line',smooth:true,symbol:'none',data:t.map(d=>+d.cost.toFixed(2)),lineStyle:{color:accent(),width:2},areaStyle:{color:new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:'rgba(51,201,163,0.26)'},{offset:1,color:'rgba(51,201,163,0.01)'}])}},
+      {name:'cost/day',type:'line',smooth:true,symbol:'none',data:t.map(d=>+d.cost.toFixed(2)),lineStyle:{color:accent(),width:2},areaStyle:{color:new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:'rgba(51,201,163,0.26)'},{offset:1,color:'rgba(51,201,163,0.01)'}])},
+        markLine:{symbol:'none',silent:true,data:inc.map(i=>({xAxis:i.idx,lineStyle:{color:polC(i.pol),width:1,type:'dotted'},label:{show:true,formatter:i.title.slice(0,16),rotate:90,position:'end',color:polC(i.pol),fontSize:8}}))}},
       {name:'degradation',type:'line',yAxisIndex:1,smooth:true,symbol:'none',data:t.map(d=>+d.deg.toFixed(3)),lineStyle:{color:amber(),width:1.6,type:'dashed'}}
     ].concat(withMarks?[{name:'your rating',type:'scatter',yAxisIndex:1,symbolSize:11,data:mp.map(m=>({value:[m.idx,m.deg],rating:m.rating,note:m.note})),
         itemStyle:{color:'#9a86c4',borderColor:'#fff',borderWidth:1},
-        tooltip:{formatter:p=>`★ <b>${p.data.rating}/5 avg</b>${p.data.count>1?' · '+p.data.count+' marks':''}<br/>${p.data.note||''}`}}]:[])
+        tooltip:{formatter:p=>`★ <b>${p.data.rating}/5 avg</b>${p.data.count>1?' · '+p.data.count+' marks':''}<br/>${p.data.note||''}`}}]:[]).concat(au.length?[{name:'automation',type:'scatter',yAxisIndex:1,symbol:'diamond',symbolSize:8,data:au.map(a=>({value:[a.idx,0.02],count:a.count})),itemStyle:{color:'rgba(140,150,165,0.65)'},tooltip:{formatter:p=>`◆ ${p.data.count} automation finding(s)`}}]:[])
   });
 }
 function degTrend(id){ const c=mk(id); if(!c)return; const t=trendData(), mp=markPoints(t);
