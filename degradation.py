@@ -222,7 +222,7 @@ def render(a, y_oof, gb, imp, out: Path):
     # machine-readable artifact (gen_degradation_page.py contract)
     recs = [
         {
-            "ref": rows_j[i]["session_ref"],
+            "session_ref": rows_j[i]["session_ref"],
             "kind": "interactive",
             "started": lang[rows_j[i]["session_ref"]]["first_ts"] or rows_j[i]["started_at"],
             "window": lang[rows_j[i]["session_ref"]]["window"],
@@ -243,7 +243,7 @@ def render(a, y_oof, gb, imp, out: Path):
         r = un[i]
         recs.append(
             {
-                "ref": r["session_ref"],
+                "session_ref": r["session_ref"],
                 "kind": "unattended",
                 "started": r["started_at"],
                 "window": _window(r["started_at"]),

@@ -451,7 +451,7 @@ def _degradation_probe(stats_dir=_STATS_DIR):
     except (OSError, ValueError) as e:
         print(f"  warn: degradation probe unavailable ({e})", file=sys.stderr)
     try:
-        cols = ["ref", "first_ts", "severity", "invariant", "event_id", "detail"]
+        cols = ["session_ref", "first_ts", "severity", "invariant", "event_id", "detail"]
         with open(os.path.join(stats_dir, "mu-audit-findings.tsv")) as f:
             lines = f.read().splitlines()[1:]
         out["audit_findings"] = [

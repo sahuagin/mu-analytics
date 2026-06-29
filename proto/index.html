@@ -740,33 +740,25 @@ function renderBehavioral(v){
   const P=VIEW.degradation_probe||{}, A=VIEW.audit_findings||[], F=VIEW.flagged_queue||[];
   const sevRank={high:0,med:1,low:2};
   const normSev=x=>{x=String(x||'').toLowerCase(); return x==='critical'||x==='error'||x==='deg'||x==='err'?'high':(x==='warn'||x==='warning'||x==='medium'?'med':'low');};
-  const refId=r=>r.session_id||r.id||r.ref||'';
-  function row(source, sev, ref, title, detail, meta, fleet='mu'){
-    return {source, sev:normSev(sev), ref, title, detail, meta, fleet, id:refId({session_id:ref})};
-  }
-  const rows=[];
-  F.forEach(x=>rows.push(row('runtime', x.reason, x.session_id||x.id, `${x.id} · ${x.model||'—'}`, x.why||'', x.reason==='deg'?'degraded stop':x.reason==='err'?'tool/error loop':x.reason==='callout'?'self-flag':'runtime', x.fleet)));
-  A.forEach(f=>rows.push(row('audit', f.severity, f.session_id||f.ref, `${(f.ref||'').slice(0,26)} · ${f.invariant||'audit'}`, f.detail||'', f.severity||'finding')));
-  (P.unnoticed||[]).forEach(w=>rows.push(row('ml','med', w.session_id||w.ref, `${(w.ref||'').slice(0,26)} · telemetry rosy`, `observed ${w.obs}; predicted ${w.pred}; residual ${w.resid}`, 'candidate unnoticed-degraded')));
-  (P.task_frust||[]).forEach(w=>rows.push(row('ml','low', w.session_id||w.ref, `${(w.ref||'').slice(0,26)} · operator warmer`, `observed ${w.obs}; predicted ${w.pred}; residual ${w.resid}`, 'telemetry pessimistic')));
-  let marks=[]; try{marks=JSON.parse(localStorage.getItem('mu-marks')||'[]');}catch(e){marks=[];}
-  marks.filter(m=>+m.rating && +m.rating<=2).forEach(m=>rows.push(row('mark','high', m.id||m.task_id, `${m.id||m.task_id} · ${m.rating}★ local mark`, m.note||'', 'manual low rating')));
-  // Canonical session key: detectors emit a mix of display ids ("mu·a1f3") and
-  // full refs ("mu:daemon:sid"); map both to the display id (via all_sessions) so
-  // signals for the same session fuse together. Anything we can't map keeps its
-  // own ref. Aligning detectors further is gated on the session-identity fix (mu-jhcj).
-  const refToDisplayId = new Map();
-  for(const session of (VIEW.all_sessions || [])){
-    if(session.ref) refToDisplayId.set(session.ref, session.id);
-    if(session.id) refToDisplayId.set(session.id, session.id);
-    for(const alias of (session.aliases || [])) refToDisplayId.set(alias, session.id);
-  }
-  const sessionKey = signal => {
-    const raw = signal.ref || signal.id || '(unknown session)';
-    return refToDisplayId.get(raw) || raw;
-  };
+  // Every detector now exposes the same canonical session_ref (cc:<uuid> /
+  // mu:daemon:sid), so signals for one session share a join key with no per-source
+  // remapping. row.ref holds that key; the Sessions page resolves it to a display
+  // id via session_index.by_alias for the drill-down link. (mu per-session
+  // granularity is still gated upstream by mu-jhcj, but the emit is now consistent.)
+  const row = (source, sev, ref, title, detail, meta, fleet = 'mu') =>
+    ({ source, sev: normSev(sev), ref: ref || '(unknown session)', title, detail, meta, fleet });
+  const rows = [];
+  F.forEach(x => rows.push(row('runtime', x.reason, x.session_ref, `${x.id} · ${x.model || '—'}`, x.why || '', x.reason === 'deg' ? 'degraded stop' : x.reason === 'err' ? 'tool/error loop' : x.reason === 'callout' ? 'self-flag' : 'runtime', x.fleet)));
+  A.forEach(f => rows.push(row('audit', f.severity, f.session_ref, `${(f.session_ref || '').slice(0, 26)} · ${f.invariant || 'audit'}`, f.detail || '', f.severity || 'finding')));
+  (P.unnoticed || []).forEach(w => rows.push(row('ml', 'med', w.session_ref, `${(w.session_ref || '').slice(0, 26)} · telemetry rosy`, `observed ${w.obs}; predicted ${w.pred}; residual ${w.resid}`, 'candidate unnoticed-degraded')));
+  (P.task_frust || []).forEach(w => rows.push(row('ml', 'low', w.session_ref, `${(w.session_ref || '').slice(0, 26)} · operator warmer`, `observed ${w.obs}; predicted ${w.pred}; residual ${w.resid}`, 'telemetry pessimistic')));
+  let marks = []; try { marks = JSON.parse(localStorage.getItem('mu-marks') || '[]'); } catch(e) { marks = []; }
+  marks.filter(m => +m.rating && +m.rating <= 2).forEach(m => {
+    const ref = m.session_ref || m.display_id || m.id || m.task_id;
+    rows.push(row('mark', 'high', ref, `${ref} · ${m.rating}★ local mark`, m.note || '', 'manual low rating'));
+  });
 
-  const fused = fuseBySession(rows, sevRank, sessionKey);
+  const fused = fuseBySession(rows, sevRank, signal => signal.ref);
   const wb = document.getElementById('b-workbench'), cnt = document.getElementById('bq-count');
   const fs = document.getElementById('bq-source'), fv = document.getElementById('bq-sev'), corrToggle = document.getElementById('bq-corr');
   const sevClass = sev => sev === 'high' ? 'err' : sev === 'med' ? 'deg' : 'callout';
@@ -804,11 +796,11 @@ function renderBehavioral(v){
   const host=document.getElementById('b-probe');
   if(host){
     const imp=(P.importances||[]).slice(0,6).map(t=>`<span class="chip">${t[0]} <b>${t[1]}</b></span>`).join(' ');
-    const tbl=(rs,col)=>(rs&&rs.length)?`<table class="sess"><tbody>`+rs.slice(0,6).map(w=>`<tr class="main"><td><a class="mono" style="font-size:11px" href="${sessionHash(w.session_id||w.ref||'')}">${(w.ref||'').slice(0,30)}</a></td><td class="r dim">obs ${w.obs}</td><td class="r dim">pred ${w.pred}</td><td class="r" style="color:${col}">Δ${w.resid}</td></tr>`).join('')+`</tbody></table>`:`<div class="empty" style="padding:10px;color:var(--fg-mute)">none</div>`;
+    const tbl=(rs,col)=>(rs&&rs.length)?`<table class="sess"><tbody>`+rs.slice(0,6).map(w=>`<tr class="main"><td><a class="mono" style="font-size:11px" href="${sessionHash(w.session_ref||'')}">${(w.session_ref||'').slice(0,30)}</a></td><td class="r dim">obs ${w.obs}</td><td class="r dim">pred ${w.pred}</td><td class="r" style="color:${col}">Δ${w.resid}</td></tr>`).join('')+`</tbody></table>`:`<div class="empty" style="padding:10px;color:var(--fg-mute)">none</div>`;
     host.innerHTML = `<div style="margin-bottom:10px">${imp||'<span class="dim">no importances</span>'}</div><div class="dim" style="font-size:11px;margin-bottom:3px">telemetry rosier than the operator felt</div>${tbl(P.unnoticed,'var(--amber)')}<div class="dim" style="font-size:11px;margin:10px 0 3px">operator warmer than telemetry predicts</div>${tbl(P.task_frust,'var(--accent)')}`;
   }
   const ah=document.getElementById('b-audit');
-  if(ah) ah.innerHTML = A.length? A.slice(0,12).map(f=>`<div class="qrow"><div class="qi" style="background:var(--amber-soft);color:var(--amber)">⚠</div><div class="qmain"><div class="qt"><a class="mono" style="font-size:11px" href="${sessionHash(f.session_id||f.ref||'')}">${(f.ref||'').slice(0,26)}</a> · <span class="dim">${f.invariant}</span></div><div class="qs">${(f.detail||'').slice(0,90)}</div></div><span class="reason deg">${f.severity}</span></div>`).join('') : `<div class="empty" style="padding:24px;color:var(--fg-mute);text-align:center">no findings recorded</div>`;
+  if(ah) ah.innerHTML = A.length? A.slice(0,12).map(f=>`<div class="qrow"><div class="qi" style="background:var(--amber-soft);color:var(--amber)">⚠</div><div class="qmain"><div class="qt"><a class="mono" style="font-size:11px" href="${sessionHash(f.session_ref||'')}">${(f.session_ref||'').slice(0,26)}</a> · <span class="dim">${f.invariant}</span></div><div class="qs">${(f.detail||'').slice(0,90)}</div></div><span class="reason deg">${f.severity}</span></div>`).join('') : `<div class="empty" style="padding:24px;color:var(--fg-mute);text-align:center">no findings recorded</div>`;
 }
 
 /* ---------- INTERNAL-OPS ---------- */
