@@ -1151,7 +1151,7 @@ function init(){
   document.getElementById('collapse').addEventListener('click',()=>{document.body.classList.toggle('collapsed');setTimeout(()=>CHARTS.forEach(c=>{try{c.resize();}catch(e){}}),200);});
   document.querySelectorAll('#fleet button').forEach(b=>b.addEventListener('click',()=>{
     document.querySelectorAll('#fleet button').forEach(x=>x.classList.remove('on')); b.classList.add('on');
-    STATE.fleet=b.dataset.fleet; TBL.open=null; route();
+    STATE.fleet=b.dataset.fleet; route();
   }));
   window.addEventListener('hashchange',route);
   window.addEventListener('resize',()=>CHARTS.forEach(c=>{try{c.resize();}catch(e){}}));
