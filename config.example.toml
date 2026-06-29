@@ -104,3 +104,17 @@ positives = {}
 # id substrings to exclude from the clean negative sample (e.g. the research
 # sessions that ran the study itself, plus each positive's id)
 meta_sessions = []
+
+# ── Incident-report timeline (Overview cost/degradation overlay) ──────────
+# incidents.py reads dated report files (incident-YYYY-MM-DD-*.md etc.) from this
+# dir and overlays them on the Overview timeline, colored issue vs positive, with
+# session_refs extracted for alignment with marks (incident-session-provenance).
+# DEPLOYMENT: this path must resolve ON THE DASHBOARD HOST. The notes dir is NOT
+# part of the ai-sessions sync today, so either add a sync step or point `dir` at a
+# synced copy. An absent/empty dir just yields no incident markers (non-fatal).
+[incidents]
+dir = "/home/USER/.claude/notes"
+# filename-prefix -> timeline polarity. Extends the built-in defaults
+# {incident = "issue", checkpoint = "positive"}; unmapped prefixes are skipped so
+# design notes don't clutter the timeline. Add your own, e.g. win = "positive".
+# polarity = { incident = "issue", checkpoint = "positive" }

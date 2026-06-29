@@ -462,6 +462,34 @@ def _degradation_probe(stats_dir=_STATS_DIR):
     return out
 
 
+def _incident_overlay():
+    """Incident reports (notes dir, via incidents.py) -> dated timeline events.
+    Never fatal — a missing/unreadable notes dir just yields no incident markers."""
+    try:
+        import incidents
+
+        return incidents.load()
+    except Exception as e:  # noqa: BLE001 — never let the notes dir break the page
+        print(f"  warn: incidents unavailable ({e})", file=sys.stderr)
+        return []
+
+
+def _automation_by_day(audit_findings):
+    """Per-day automation-finding rollup for the timeline overlay. Today: the
+    mu-audit sweep (audit_findings, dated by first_ts). The behavior-judge verdict
+    sink folds in here once that runner lands — same {date,count,sev...} shape."""
+    by = defaultdict(lambda: {"count": 0, "high": 0, "medium": 0, "low": 0})
+    for f in audit_findings:
+        day = (f.get("first_ts") or "")[:10]
+        if len(day) != 10:
+            continue
+        sev = (f.get("severity") or "").lower()
+        by[day]["count"] += 1
+        if sev in ("high", "medium", "low"):
+            by[day][sev] += 1
+    return [{"date": d, **v} for d, v in sorted(by.items())]
+
+
 def build():
     """Assemble the full dashboard contract: sink-derived cost/overview slices +
     event-log-derived rich slices + operator marks + meta flags."""
@@ -544,6 +572,11 @@ def build():
         result.setdefault(k, default)
     # ML-degradation probe + mu-audit findings (refresh-produced files) -> DATA.
     result.update(_degradation_probe())
+    # Overview timeline overlays: incident reports (notes dir) + per-day automation
+    # findings. marks (read above into slices) are the third overlay; together they
+    # ride the cost/degradation trend so the operator can eyeball correlations.
+    result["incidents"] = _incident_overlay()
+    result["automation_by_day"] = _automation_by_day(result.get("audit_findings", []))
     mark_summary = {
         "marks": len(slices.get("marks", [])),
         "sessions": len(marks_by_session),

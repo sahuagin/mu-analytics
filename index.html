@@ -903,7 +903,10 @@ const DATA = /*BEGIN_DATA*/{
       "cost": 0,
       "degradation": 0
     }
-  ]
+  ],
+  "marks": [],
+  "incidents": [],
+  "automation_by_day": []
 }/*END_DATA*/;
 
 /* =========================== formatting helpers =========================== */
@@ -1126,18 +1129,43 @@ const accent = cssVar('--accent'), amber = cssVar('--amber'), slate = cssVar('--
   });
 })();
 
-/* trend — cost area + degradation line on second axis */
+/* trend — cost + degradation, with operator marks, incident reports, and
+   per-day automation findings overlaid on a UNIFIED date axis (so a mark or
+   incident on a no-cost day is still visible — the old axis only had cost days,
+   which is why most marks fell off). */
 (function trend(){
-  const t = DATA.trend_by_day;
+  const t   = DATA.trend_by_day || [];
+  const marks = DATA.marks || [];
+  const incidents = DATA.incidents || [];
+  const auto = DATA.automation_by_day || [];
+  // unified, sorted date axis = union of every dated series
+  const dset = new Set();
+  t.forEach(d=>dset.add(d.date)); marks.forEach(m=>m.date&&dset.add(m.date));
+  incidents.forEach(i=>i.date&&dset.add(i.date)); auto.forEach(a=>a.date&&dset.add(a.date));
+  const days = [...dset].sort();
+  const xi = Object.fromEntries(days.map((d,i)=>[d,i]));
+  const costBy = Object.fromEntries(t.map(d=>[d.date,d.cost]));
+  const degrBy = Object.fromEntries(t.map(d=>[d.date,d.degradation]));
+  const autoBy = Object.fromEntries(auto.map(a=>[a.date,a]));
+  const marksBy={}, incBy={};
+  marks.forEach(m=>{(marksBy[m.date]=marksBy[m.date]||[]).push(m);});
+  incidents.forEach(i=>{(incBy[i.date]=incBy[i.date]||[]).push(i);});
+  const ratingColor=r=>['#e5534b','#e0823d','#d4a72c','#7bb661','#33c9a3'][Math.max(1,Math.min(5,r|0))-1];
+  const polColor=p=>p==='positive'?'#33c9a3':'#e5534b';
   const c = mk('c-trend');
   c.setOption({
     grid:{left:10,right:14,top:18,bottom:26,containLabel:true},
     tooltip:{...baseTooltip(),trigger:'axis',axisPointer:{type:'cross',crossStyle:{color:'#3a4350'},lineStyle:{color:'#3a4350'}},
-      formatter:ps=>{const d=ps[0].axisValue;let s=`<b>${d}</b>`;ps.forEach(p=>{
-        s+=`<br/>${p.marker} ${p.seriesName}: ${p.seriesName==='degradation'?pct(p.value,1):money(p.value,p.value>=100?0:2)}`;});return s;}},
-    legend:{data:['cost/day','degradation'],right:6,top:-2,itemWidth:14,itemHeight:8,
+      formatter:ps=>{const d=days[ps[0].dataIndex];let s=`<b>${d}</b>`;
+        s+=`<br/>cost: ${money(costBy[d]||0,(costBy[d]||0)>=100?0:2)}`;
+        s+=`<br/>degradation: ${pct(degrBy[d]||0,1)}`;
+        (marksBy[d]||[]).forEach(m=>{s+=`<br/><span style="color:${ratingColor(m.rating)}">★${m.rating}</span> ${(m.note||'').slice(0,60)||'(mark)'}`;});
+        (incBy[d]||[]).forEach(x=>{s+=`<br/><span style="color:${polColor(x.polarity)}">◉ ${x.polarity}</span> ${(x.title||'').slice(0,60)}`;});
+        if(autoBy[d])s+=`<br/>◆ automation: ${autoBy[d].count} finding(s)`;
+        return s;}},
+    legend:{data:['cost/day','degradation','marks','automation'],right:6,top:-2,itemWidth:14,itemHeight:8,
       textStyle:{color:LBL,fontSize:11,fontFamily:"'JetBrains Mono',monospace"},inactiveColor:'#3a4350'},
-    xAxis:{type:'category',data:t.map(d=>d.date.slice(5)),boundaryGap:false,
+    xAxis:{type:'category',data:days.map(d=>d.slice(5)),boundaryGap:false,
       axisLine:{lineStyle:{color:GRID}},axisTick:{show:false},
       axisLabel:{color:fgmute,fontFamily:"'JetBrains Mono',monospace",fontSize:9.5,interval:3}},
     yAxis:[
@@ -1146,15 +1174,25 @@ const accent = cssVar('--accent'), amber = cssVar('--amber'), slate = cssVar('--
         splitLine:{lineStyle:{color:GRID}},axisLine:{show:false},axisTick:{show:false}},
       {type:'value',max:1,name:'degr.',nameTextStyle:{color:fgmute,fontSize:10,fontFamily:"'JetBrains Mono',monospace"},
         axisLabel:{color:fgmute,fontFamily:"'JetBrains Mono',monospace",fontSize:10,formatter:v=>(v*100)+'%'},
-        splitLine:{show:false},axisLine:{show:false},axisTick:{show:false}}
+        splitLine:{show:false},axisLine:{show:false},axisTick:{show:false}},
+      {type:'value',min:0,max:5,show:false}   // marks rating (1-5) + automation rug; hidden
     ],
     series:[
-      {name:'cost/day',type:'line',smooth:true,symbol:'none',data:t.map(d=>d.cost),
+      {name:'cost/day',type:'line',smooth:true,symbol:'none',data:days.map(d=>costBy[d]||0),
         lineStyle:{color:accent,width:2},
         areaStyle:{color:new echarts.graphic.LinearGradient(0,0,0,1,[
-          {offset:0,color:'rgba(51,201,163,0.28)'},{offset:1,color:'rgba(51,201,163,0.01)'}])}},
-      {name:'degradation',type:'line',yAxisIndex:1,smooth:true,symbol:'none',data:t.map(d=>d.degradation),
-        lineStyle:{color:amber,width:1.6,type:'dashed'}}
+          {offset:0,color:'rgba(51,201,163,0.28)'},{offset:1,color:'rgba(51,201,163,0.01)'}])},
+        // incident reports as vertical lines, colored by polarity (issue=red, positive=green)
+        markLine:{symbol:'none',silent:true,
+          data:incidents.filter(i=>i.date in xi).map(i=>({xAxis:xi[i.date],
+            lineStyle:{color:polColor(i.polarity),width:1,type:'dotted'},
+            label:{show:true,formatter:(i.title||'').slice(0,18),color:polColor(i.polarity),fontSize:8,rotate:90,position:'end'}}))}},
+      {name:'degradation',type:'line',yAxisIndex:1,smooth:true,symbol:'none',data:days.map(d=>degrBy[d]||0),
+        lineStyle:{color:amber,width:1.6,type:'dashed'}},
+      {name:'marks',type:'scatter',yAxisIndex:2,symbolSize:9,z:5,
+        data:marks.filter(m=>m.date in xi).map(m=>({value:[xi[m.date],Math.max(1,Math.min(5,m.rating|0))],itemStyle:{color:ratingColor(m.rating)}}))},
+      {name:'automation',type:'scatter',yAxisIndex:2,symbol:'diamond',
+        data:auto.filter(a=>a.date in xi).map(a=>({value:[xi[a.date],0.15],symbolSize:Math.min(22,6+a.count*2),itemStyle:{color:'rgba(140,150,165,0.6)'}}))}
     ]
   });
 })();
