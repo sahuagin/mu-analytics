@@ -695,11 +695,40 @@ function renderCost(v){
 }
 
 /* ---------- BEHAVIORAL ---------- */
+// One glyph per detector source, reused by the attention queue.
+const SOURCE_GLYPH = { runtime: '⚑', audit: '⚠', ml: 'Δ', mark: '★' };
+const sourceGlyph = source => SOURCE_GLYPH[source] || '•';
+
+// Group per-signal attention rows into one entry per session and score
+// "corroboration" = how many DISTINCT detector sources independently flagged the
+// session. A session three different detectors agree on outranks one flagged
+// three times by the same detector — that is the signal-reinforcement we want.
+//   signalRows : the flat rows gathered from runtime/audit/ml/mark detectors
+//   sevOrder   : severity -> rank map (lower = worse), for picking the worst severity
+//   keyOf      : canonicalises a signal to a stable per-session key (see sessionKey)
+function fuseBySession(signalRows, sevOrder, keyOf){
+  const bySession = new Map();
+  for(const signal of signalRows){
+    const key = keyOf(signal);
+    const entry = bySession.get(key) || { ref: key, fleet: signal.fleet, sources: new Set(), worstSev: 'low', signals: [] };
+    entry.sources.add(signal.source);
+    entry.signals.push(signal);
+    if(sevOrder[signal.sev] < sevOrder[entry.worstSev]) entry.worstSev = signal.sev;
+    bySession.set(key, entry);
+  }
+  return [...bySession.values()]
+    .map(entry => ({ ...entry, corroboration: entry.sources.size, sourceList: [...entry.sources] }))
+    .sort((a, b) =>
+      b.corroboration - a.corroboration ||              // most independent agreement first
+      sevOrder[a.worstSev] - sevOrder[b.worstSev] ||     // then worst severity
+      b.signals.length - a.signals.length);              // then total signal volume
+}
+
 function renderBehavioral(v){
   v.innerHTML = pageHead('Behavioral','Review workbench for sessions that deserve attention. This page combines machine, audit, runtime, and manual signals; the classifier-artifact outcome/hallucination summaries are intentionally not shown here.','auto')+`
     <div class="caveat" style="margin-bottom:16px"><div class="ic">!</div><div class="body"><b>Review queue, not verdicts.</b> Rows below are candidate attention signals: degraded stops, tool-error loops, self-flags, deterministic audit findings, telemetry/sentiment residuals, and local low ratings. Open the linked session before treating a row as ground truth.</div></div>
     <div class="grid">
-      <div class="panel col-12"><div class="ph" style="align-items:center;gap:12px;flex-wrap:wrap"><div><div class="ttl">Attention queue</div><div class="desc" id="bq-count">sessions and findings that need human review</div></div><div class="tbl-tools"><select id="bq-source" class="fin"><option value="">all signals</option><option value="runtime">runtime</option><option value="audit">audit</option><option value="ml">ml residual</option><option value="mark">manual mark</option></select><select id="bq-sev" class="fin"><option value="">all severity</option><option value="high">high</option><option value="med">medium</option><option value="low">low</option></select></div></div><div class="queue" id="b-workbench"></div></div>
+      <div class="panel col-12"><div class="ph" style="align-items:center;gap:12px;flex-wrap:wrap"><div><div class="ttl">Attention queue</div><div class="desc" id="bq-count">sessions and findings that need human review</div></div><div class="tbl-tools"><select id="bq-source" class="fin"><option value="">all signals</option><option value="runtime">runtime</option><option value="audit">audit</option><option value="ml">ml residual</option><option value="mark">manual mark</option></select><select id="bq-sev" class="fin"><option value="">all severity</option><option value="high">high</option><option value="med">medium</option><option value="low">low</option></select><div class="toggle" id="bq-corr"><span class="sw2"></span> corroborated (2+)</div></div></div><div class="queue" id="b-workbench"></div></div>
       <div class="panel col-7"><div class="ph"><div><div class="ttl">Degradation over time · with your ratings</div><div class="desc">computed stop-reason degradation with sparse manual session-ratings dropped on as points</div></div><div class="hint" id="b-mark-summary">degradation % · ★ rating</div></div><div class="chart" id="b-trend" style="height:240px"></div></div>
       <div class="panel col-5"><div class="ph"><div><div class="ttl">Signal mix</div><div class="desc">why rows entered the queue</div></div><div class="hint" id="b-signal-h">—</div></div><div class="chart" id="b-signals" style="height:240px"></div></div>
       <div class="panel col-7"><div class="ph"><div><div class="ttl">Telemetry → operator-sentiment probe</div><div class="desc">residual tails where telemetry and operator sentiment disagree</div></div><div class="hint" id="b-probe-skill"></div></div><div id="b-probe" style="margin-top:8px"></div></div>
@@ -722,18 +751,51 @@ function renderBehavioral(v){
   (P.task_frust||[]).forEach(w=>rows.push(row('ml','low', w.session_id||w.ref, `${(w.ref||'').slice(0,26)} · operator warmer`, `observed ${w.obs}; predicted ${w.pred}; residual ${w.resid}`, 'telemetry pessimistic')));
   let marks=[]; try{marks=JSON.parse(localStorage.getItem('mu-marks')||'[]');}catch(e){marks=[];}
   marks.filter(m=>+m.rating && +m.rating<=2).forEach(m=>rows.push(row('mark','high', m.id||m.task_id, `${m.id||m.task_id} · ${m.rating}★ local mark`, m.note||'', 'manual low rating')));
-  rows.sort((a,b)=>(sevRank[a.sev]-sevRank[b.sev]) || String(a.source).localeCompare(b.source));
-  const wb=document.getElementById('b-workbench'), cnt=document.getElementById('bq-count'), fs=document.getElementById('bq-source'), fv=document.getElementById('bq-sev');
-  function renderQueue(){
-    const src=fs.value, sev=fv.value;
-    const shown=rows.filter(r=>(!src||r.source===src)&&(!sev||r.sev===sev));
-    cnt.textContent=`${shown.length} shown · ${rows.length} total signals`;
-    wb.innerHTML = shown.length ? shown.slice(0,60).map(r=>`<div class="qrow" style="${rowDim(r.fleet)?'opacity:.35':''}">
-      <div class="qi" style="background:${r.sev==='high'?'var(--amber-soft)':'rgba(125,147,201,0.12)'};color:${r.sev==='high'?'var(--amber)':'var(--blue)'}">${r.source==='audit'?'⚠':r.source==='mark'?'★':r.source==='ml'?'Δ':'⚑'}</div>
-      <div class="qmain"><div class="qt"><a class="mono" style="font-size:11px" href="${sessionHash(r.ref)}">${esc(r.title)}</a></div><div class="qs">${esc(r.detail).slice(0,140)}</div></div>
-      <span class="reason ${r.sev==='high'?'err':r.sev==='med'?'deg':'callout'}">${r.source}</span><div class="qconf">${r.meta}</div></div>`).join('') : `<div class="empty" style="padding:24px;color:var(--fg-mute);text-align:center">No rows match this filter.</div>`;
+  // Canonical session key: detectors emit a mix of display ids ("mu·a1f3") and
+  // full refs ("mu:daemon:sid"); map both to the display id (via all_sessions) so
+  // signals for the same session fuse together. Anything we can't map keeps its
+  // own ref. Aligning detectors further is gated on the session-identity fix (mu-jhcj).
+  const refToDisplayId = new Map();
+  for(const session of (VIEW.all_sessions || [])){
+    if(session.ref) refToDisplayId.set(session.ref, session.id);
+    if(session.id) refToDisplayId.set(session.id, session.id);
+    for(const alias of (session.aliases || [])) refToDisplayId.set(alias, session.id);
   }
-  fs.addEventListener('change',renderQueue); fv.addEventListener('change',renderQueue); renderQueue();
+  const sessionKey = signal => {
+    const raw = signal.ref || signal.id || '(unknown session)';
+    return refToDisplayId.get(raw) || raw;
+  };
+
+  const fused = fuseBySession(rows, sevRank, sessionKey);
+  const wb = document.getElementById('b-workbench'), cnt = document.getElementById('bq-count');
+  const fs = document.getElementById('bq-source'), fv = document.getElementById('bq-sev'), corrToggle = document.getElementById('bq-corr');
+  const sevClass = sev => sev === 'high' ? 'err' : sev === 'med' ? 'deg' : 'callout';
+
+  function renderQueue(){
+    const sourceFilter = fs.value, sevFilter = fv.value, corroboratedOnly = corrToggle.classList.contains('on');
+    const matchesFilter = signal => (!sourceFilter || signal.source === sourceFilter) && (!sevFilter || signal.sev === sevFilter);
+    const sessions = fused
+      .filter(s => s.signals.some(matchesFilter))
+      .filter(s => !corroboratedOnly || s.corroboration >= 2);
+    const corroboratedTotal = fused.filter(s => s.corroboration >= 2).length;
+    cnt.textContent = `${sessions.length} session${sessions.length === 1 ? '' : 's'} · ${corroboratedTotal} corroborated (2+ detectors) · ${rows.length} signals`;
+    wb.innerHTML = sessions.length ? sessions.slice(0, 60).map(s => {
+      const badgeColor = s.corroboration >= 3 ? 'var(--amber)' : s.corroboration >= 2 ? 'var(--blue)' : 'var(--fg-mute)';
+      const badgeBg = s.corroboration >= 3 ? 'var(--amber-soft)' : 'rgba(125,147,201,0.12)';
+      const chips = s.sourceList.map(src => `<span class="reason callout" style="margin-left:5px">${sourceGlyph(src)} ${src}</span>`).join('');
+      const signalLines = s.signals.slice(0, 6).map(sig =>
+        `<div class="qs">${sourceGlyph(sig.source)} ${esc(sig.title)}${sig.detail ? ' — ' + esc(sig.detail).slice(0, 90) : ''}</div>`).join('');
+      return `<div class="qrow" style="align-items:flex-start;${rowDim(s.fleet) ? 'opacity:.35' : ''}">
+        <div class="qi" title="${s.corroboration} independent detector${s.corroboration === 1 ? '' : 's'}" style="background:${badgeBg};color:${badgeColor};font-weight:700">${s.corroboration}</div>
+        <div class="qmain"><div class="qt"><a class="mono" style="font-size:11px" href="${sessionHash(s.ref)}">${esc(s.ref || '(unknown)')}</a>${chips}</div>${signalLines}</div>
+        <span class="reason ${sevClass(s.worstSev)}">${s.worstSev}</span><div class="qconf">${s.signals.length} signal${s.signals.length === 1 ? '' : 's'}</div>
+      </div>`;
+    }).join('') : `<div class="empty" style="padding:24px;color:var(--fg-mute);text-align:center">No sessions match this filter.</div>`;
+  }
+  fs.addEventListener('change', renderQueue);
+  fv.addEventListener('change', renderQueue);
+  corrToggle.addEventListener('click', () => { corrToggle.classList.toggle('on'); renderQueue(); });
+  renderQueue();
   const mix={}; rows.forEach(r=>{mix[r.source]=(mix[r.source]||0)+1;});
   document.getElementById('b-signal-h').textContent=`${rows.length} total signals`;
   barH('b-signals', Object.entries(mix).map(([label,val])=>({label,val,color:label==='audit'?amber():label==='ml'?accent():label==='mark'?cssVar('--violet'):blue(),raw:true})).sort((a,b)=>a.val-b.val), 12);
