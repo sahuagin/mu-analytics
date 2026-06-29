@@ -45,6 +45,7 @@ fails there. That shadowing is the classic "I installed it and it's not found" t
 | `cc_telemetry.py` | cc transcript → mu-core `TaskTelemetry` (+ `tool_call`) JSONL, per session |
 | `cost.py` | read both sinks via stdlib `sqlite3`→polars, join `[rates]`, compute cost, split by `cost_kind`, hand-check |
 | `sample_data.py` | `build()` assembles the dashboard `DATA` contract from the sink; `./run sample_data.py` prints it as JSON |
+| `incidents.py` | parse the notes dir (`[incidents].dir`) of incident reports → dated timeline events (issue/positive + session_refs) for the Overview cost/degradation overlay |
 | `demo_data.py` | same contract shape, **fabricated** numbers — `MU_ANALYTICS_DEMO=1` uses it to render the screenshot above without exposing real usage |
 | `gen_dashboard.py` | inject live `DATA` into `index.html` → self-contained `dist/`; cron-regenerable (honors `MU_ANALYTICS_DEMO`) |
 | `index.html` + `assets/` | dashboard shell (vendored ECharts + fonts); placeholder data behind `/*BEGIN_DATA*/…/*END_DATA*/` markers |
