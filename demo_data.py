@@ -283,6 +283,7 @@ def build():
             {
                 "id": "mu·000",
                 "session_id": "mu·000",
+                "session_ref": "mu:a1b2c3d4:session-1",
                 "fleet": "mu",
                 "model": "claude-opus-4-8",
                 "reason": "deg",
@@ -291,6 +292,7 @@ def build():
             },
             {
                 "id": "mu·1d8e",
+                "session_ref": "mu:1d8e0000:session-1",
                 "fleet": "mu",
                 "model": "gpt-5.5",
                 "reason": "err",
@@ -299,6 +301,7 @@ def build():
             },
             {
                 "id": "mu·be07",
+                "session_ref": "mu:be070000:session-1",
                 "fleet": "mu",
                 "model": "claude-opus-4-7",
                 "reason": "callout",
@@ -416,7 +419,7 @@ def build():
             "importances": [["input_tok", 0.44], ["wall_p95", 0.38], ["tool_calls", 0.14]],
             "unnoticed": [
                 {
-                    "ref": "mu·a1b2c3d4",
+                    "session_ref": "mu:a1b2c3d4:session-1",
                     "window": "wd-jun15",
                     "started": "2026-06-15T13:00",
                     "obs": -10.0,
@@ -434,7 +437,7 @@ def build():
             ],
             "task_frust": [
                 {
-                    "ref": "cc·e5f6a7b8",
+                    "session_ref": "cc:e5f6a7b8",
                     "window": "wd-jun15",
                     "started": "2026-06-15T09:00",
                     "obs": 60.0,
@@ -452,7 +455,7 @@ def build():
             ],
             "unattended": [
                 {
-                    "ref": "mu·c9d0e1f2",
+                    "session_ref": "mu:c9d0e1f2:session-1",
                     "window": "W-jun13",
                     "started": "2026-06-13T22:00",
                     "pred": -40.0,
@@ -464,7 +467,7 @@ def build():
         },
         "audit_findings": [
             {
-                "ref": "mu·a1b2c3d4",
+                "session_ref": "mu:a1b2c3d4:session-1",
                 "first_ts": "2026-06-15T13:00",
                 "severity": "High",
                 "invariant": "repeated_identical_tool_call",

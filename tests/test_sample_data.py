@@ -194,9 +194,9 @@ class TestDegradationProbe(unittest.TestCase):
                 },
                 "sessions": [
                     # interactive: pred>obs (unnoticed) and pred<obs (task_frust)
-                    {"ref": "mu:d1:s1", "kind": "interactive", "obs": -10.0, "pred": 30.0},
-                    {"ref": "cc:u2", "kind": "interactive", "obs": 50.0, "pred": -5.0},
-                    {"ref": "mu:d3:s3", "kind": "unattended", "pred": -40.0},
+                    {"session_ref": "mu:d1:s1", "kind": "interactive", "obs": -10.0, "pred": 30.0},
+                    {"session_ref": "cc:u2", "kind": "interactive", "obs": 50.0, "pred": -5.0},
+                    {"session_ref": "mu:d3:s3", "kind": "unattended", "pred": -40.0},
                 ],
             }
             with open(os.path.join(tmp, "degradation-ml.json"), "w") as f:
@@ -209,9 +209,9 @@ class TestDegradationProbe(unittest.TestCase):
         dp = out["degradation_probe"]
         self.assertEqual(dp["r2"], 0.1)
         # unnoticed = highest resid (pred-obs); task_frust = lowest
-        self.assertEqual(dp["unnoticed"][0]["ref"], "mu:d1:s1")  # resid +40
-        self.assertEqual(dp["task_frust"][0]["ref"], "cc:u2")  # resid -55
-        self.assertEqual(dp["unattended"][0]["ref"], "mu:d3:s3")
+        self.assertEqual(dp["unnoticed"][0]["session_ref"], "mu:d1:s1")  # resid +40
+        self.assertEqual(dp["task_frust"][0]["session_ref"], "cc:u2")  # resid -55
+        self.assertEqual(dp["unattended"][0]["session_ref"], "mu:d3:s3")
         # audit findings parsed by column
         self.assertEqual(len(out["audit_findings"]), 1)
         self.assertEqual(out["audit_findings"][0]["invariant"], "repeated_identical_tool_call")
