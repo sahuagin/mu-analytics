@@ -384,6 +384,56 @@ const DATA = /*BEGIN_DATA*/{
   recall:[ {source:"Memory",items:412,tokens:38400},{source:"ProjectFile",items:188,tokens:96200},{source:"Bootloader",items:34,tokens:12100} ],
 }/*END_DATA*/;
 
+/* ---- fleet scoping --------------------------------------------------------
+   VIEW is the fleet-scoped contract the renderers + chart helpers read; route()
+   sets it from STATE.fleet on every navigation/selector change. For 'both' it IS
+   the raw DATA. For a single fleet we recompute the session-derived aggregates
+   (KPIs, cost_by_kind, outcomes, trend_by_day, hallucination) from all_sessions
+   — which carries fleet/kind/cost/outcome/model/tool_calls/started — and filter
+   the already-fleet-keyed arrays. Methodology mirrors sample_data.build() so a
+   single-fleet view matches what the server would emit for that fleet. */
+let VIEW = DATA;
+const HALLU_OUTCOMES = new Set(['narrative_no_action','hollow_commit','lying_state']); // == sample_data.HALLU
+function scopedData(fleet){
+  if(fleet!=='mu' && fleet!=='cc') return DATA;
+  const base=(DATA.all_sessions&&DATA.all_sessions.length)?DATA.all_sessions:(DATA.top_sessions||[]);
+  const sess=base.filter(s=>s.fleet===fleet);
+  const r2=x=>+(+x||0).toFixed(2), r3=x=>+(+x||0).toFixed(3);
+  // cost_by_kind + kpi
+  const kindM=new Map();
+  sess.forEach(s=>{const k=kindM.get(s.kind)||{label:s.kind,sessions:0,cost:0}; k.sessions++; k.cost+=+s.cost||0; kindM.set(s.kind,k);});
+  const cost_by_kind=[...kindM.values()].map(k=>({label:k.label,sessions:k.sessions,cost:r2(k.cost)})).sort((a,b)=>b.cost-a.cost);
+  const total=r2(sess.reduce((x,s)=>x+(+s.cost||0),0));
+  const byKindCost={}; cost_by_kind.forEach(k=>byKindCost[k.label]=k.cost);
+  // cost_by_model
+  const modM=new Map();
+  sess.forEach(s=>{const m=modM.get(s.model)||{fleet,model:s.model,sessions:0,cost:0}; m.sessions++; m.cost+=+s.cost||0; modM.set(s.model,m);});
+  const cost_by_model=[...modM.values()].map(m=>({fleet,model:m.model,sessions:m.sessions,cost:r2(m.cost)})).sort((a,b)=>b.cost-a.cost).slice(0,8);
+  // outcomes
+  const outM=new Map();
+  sess.forEach(s=>{const o=s.outcome||'unclassified'; outM.set(o,(outM.get(o)||0)+1);});
+  const outcomes=[...outM.entries()].map(([outcome,sessions])=>({outcome,sessions})).sort((a,b)=>b.sessions-a.sessions);
+  // hallucination rate per model (tool-using sessions, denom>=3)
+  const hd=new Map();
+  sess.forEach(s=>{ if((+s.tool_calls||0)>0){ const h=hd.get(s.model)||{model:s.model,denom:0,num:0}; h.denom++; if(HALLU_OUTCOMES.has(s.outcome))h.num++; hd.set(s.model,h);} });
+  const hallucination_by_model=[...hd.values()].filter(h=>h.denom>=3).map(h=>({fleet,model:h.model,rate:r3(h.num/h.denom),sessions:h.denom})).sort((a,b)=>b.sessions-a.sessions).slice(0,10);
+  // trend_by_day — cost + degradation (hallu / tool-using per day); shape == server's
+  const dM=new Map();
+  sess.forEach(s=>{const d=s.started||''; if(!d)return; const e=dM.get(d)||{date:d,cost:0,den:0,num:0}; e.cost+=+s.cost||0; if((+s.tool_calls||0)>0){e.den++; if(HALLU_OUTCOMES.has(s.outcome))e.num++;} dM.set(d,e);});
+  const trend_by_day=[...dM.values()].sort((a,b)=>a.date<b.date?-1:1).map(e=>({date:e.date,cost:r2(e.cost),degradation:e.den?r3(e.num/e.den):0}));
+  const byFleet=a=>(a||[]).filter(x=>x.fleet===fleet);
+  // top_sessions stays global on purpose: the Cost page pairs it with
+  // cost_composition_top_session (per-token breakdown), which can't be recomputed
+  // client-side — scoping the label but not the donut would make them disagree.
+  return {...DATA,
+    kpi:{total_api_rate_equiv:total, by_kind:{subscription:byKindCost.subscription||0, billed:byKindCost.billed||0, free:byKindCost.free||0}},
+    cost_by_kind, cost_by_fleet:[{label:fleet,sessions:sess.length,cost:total}],
+    cost_by_model, outcomes, hallucination_by_model, trend_by_day, all_sessions:sess,
+    flagged_queue:byFleet(DATA.flagged_queue),
+    degradation_rate: fleet==='mu' ? DATA.degradation_rate : 0,  // mu stop-reason signal; cc emits none
+  };
+}
+
 /* ======================= helpers (same as index.html) ======================= */
 const usd0=new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:0});
 const usd2=new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',minimumFractionDigits:2,maximumFractionDigits:2});
@@ -402,42 +452,45 @@ function disposeCharts(){CHARTS.forEach(c=>{try{c.dispose();}catch(e){}}); CHART
 const accent=()=>cssVar('--accent'),amber=()=>cssVar('--amber'),slate=()=>cssVar('--slate'),blue=()=>cssVar('--blue'),fgmute=()=>cssVar('--fg-mute');
 /* escape arbitrary transcript text before innerHTML — real tool output contains <, >, & and even </div> */
 const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-// fleet emphasis: BOTH fleets always render; "highlight" dims the
-// other fleet. It is intentionally not a filter.
-const DIM=0.24;
-function emph(fleet){ return (STATE.fleet==='both'||STATE.fleet===fleet)?1:DIM; }
-function rowDim(fleet){ return STATE.fleet!=='both' && STATE.fleet!==fleet; }
+// The fleet selector is a real filter now: 'both' shows everything, a single
+// fleet scopes the data via scopedData()/VIEW — so there is nothing to dim.
+// These remain as no-ops so the chart/queue call-sites stay untouched.
+function emph(){ return 1; }
+function rowDim(){ return false; }
 const fleetName=f=>f==='cc'?'claude-code':'mu';
 
 /* ======================= page renderers ======================= */
 function pageHead(title,lede,scope){
-  const tag = scope==='mu'?`<span class="scope-tag mu">mu fleet only</span>`:scope==='both'?`<span class="scope-tag both">mu + cc</span>`:'';
+  if(scope==='auto') scope=STATE.fleet;   // follow the fleet selector
+  const tag = scope==='mu'?`<span class="scope-tag mu">mu fleet only</span>`
+            : scope==='cc'?`<span class="scope-tag" style="color:var(--amber);background:rgba(214,161,78,0.1);border-color:rgba(214,161,78,0.25)">claude-code only</span>`
+            : scope==='both'?`<span class="scope-tag both">mu + cc</span>`:'';
   return `<div class="page-head"><div><h2>${title}</h2><div class="lede">${lede}</div></div>${tag}</div>`;
 }
 
 /* ---------- OVERVIEW ---------- */
 function renderOverview(v){
-  const k=DATA.kpi.by_kind, totS=DATA.cost_by_kind.reduce((a,b)=>a+b.sessions,0);
-  const degPct=(DATA.degradation_rate!=null)?DATA.degradation_rate:0;
-  const ccTot=(DATA.cost_by_fleet.find(f=>f.label==='cc')||{}).sessions||0;
-  const muTot=(DATA.cost_by_fleet.find(f=>f.label==='mu')||{}).sessions||0;
-  const nDays=(DATA.trend_by_day||[]).length, nHarness=(DATA.cost_by_fleet||[]).length;
-  const byKind=Object.fromEntries(DATA.cost_by_kind.map(x=>[x.label,x.sessions]));
-  const filters=DATA.default_filters||{}, excluded=filters.excluded_test_sessions||0;
-  const artifactOutcome=(DATA.outcomes||[]).find(o=>o.outcome==='narrative_no_action');
+  const k=VIEW.kpi.by_kind, totS=VIEW.cost_by_kind.reduce((a,b)=>a+b.sessions,0);
+  const degPct=(VIEW.degradation_rate!=null)?VIEW.degradation_rate:0;
+  const ccTot=(VIEW.cost_by_fleet.find(f=>f.label==='cc')||{}).sessions||0;
+  const muTot=(VIEW.cost_by_fleet.find(f=>f.label==='mu')||{}).sessions||0;
+  const nDays=(VIEW.trend_by_day||[]).length, nHarness=(VIEW.cost_by_fleet||[]).length;
+  const byKind=Object.fromEntries(VIEW.cost_by_kind.map(x=>[x.label,x.sessions]));
+  const filters=VIEW.default_filters||{}, excluded=filters.excluded_test_sessions||0;
+  const artifactOutcome=(VIEW.outcomes||[]).find(o=>o.outcome==='narrative_no_action');
   const artifactShare=artifactOutcome&&totS?artifactOutcome.sessions/totS:0;
-  v.innerHTML = pageHead('Overview','Cost, outcomes and degradation across both harnesses — the all-metrics landing.','both')+`
+  v.innerHTML = pageHead('Overview','Cost, outcomes and degradation across both harnesses — the all-metrics landing.','auto')+`
     <div class="recon">
       <div class="cell"><div class="k"><span class="dot solid"></span>Real spend · billed</div><div class="v">${money(k.billed)}</div></div>
       <div class="cell"><div class="k"><span class="dot ring"></span>Notional · subscription</div><div class="v">≈ ${money(k.subscription)}</div></div>
       <div class="cell"><div class="k"><span class="dot free"></span>Free/local</div><div class="v">${money(k.free)}</div></div>
-      <div class="cell"><div class="k">API-rate equivalent · total</div><div class="v">≈ ${money(DATA.kpi.total_api_rate_equiv)} <small>rate-equiv</small></div></div>
+      <div class="cell"><div class="k">API-rate equivalent · total</div><div class="v">≈ ${money(VIEW.kpi.total_api_rate_equiv)} <small>rate-equiv</small></div></div>
     </div>
     <div class="kpis k4">
       <div class="kpi billed"><div class="top"><div class="name"><span class="dot solid"></span>Billed</div><div class="tag">paid · real $</div></div>
-        <div class="big"><span class="cur">$</span>${money(k.billed).replace('$','')}</div><div class="meta"><span class="b">${n0.format(byKind.billed||0)}</span> sessions · money actually charged</div><div class="bar"><i style="width:${(k.billed/DATA.kpi.total_api_rate_equiv*100).toFixed(2)}%"></i></div></div>
+        <div class="big"><span class="cur">$</span>${money(k.billed).replace('$','')}</div><div class="meta"><span class="b">${n0.format(byKind.billed||0)}</span> sessions · money actually charged</div><div class="bar"><i style="width:${(k.billed/VIEW.kpi.total_api_rate_equiv*100).toFixed(2)}%"></i></div></div>
       <div class="kpi subs"><div class="top"><div class="name"><span class="dot ring"></span>Subscription</div><div class="tag">notional</div></div>
-        <div class="big">≈ <span class="cur">$</span>${money(k.subscription).replace('$','')}</div><div class="meta"><span class="b">${n0.format(byKind.subscription||0)}</span> sessions · API-rate equiv, $0 charged</div><div class="bar"><i style="width:${(k.subscription/DATA.kpi.total_api_rate_equiv*100).toFixed(2)}%"></i></div></div>
+        <div class="big">≈ <span class="cur">$</span>${money(k.subscription).replace('$','')}</div><div class="meta"><span class="b">${n0.format(byKind.subscription||0)}</span> sessions · API-rate equiv, $0 charged</div><div class="bar"><i style="width:${(k.subscription/VIEW.kpi.total_api_rate_equiv*100).toFixed(2)}%"></i></div></div>
       <div class="kpi"><div class="top"><div class="name">Sessions</div><div class="tag">${nDays} days</div></div><div class="big">${n0.format(totS)}</div><div class="meta"><span class="b">${n0.format(ccTot)}</span> cc · <span class="b">${n0.format(muTot)}</span> mu</div><div class="bar"><i style="width:100%;background:var(--panel-3)"></i></div></div>
       <div class="kpi warn"><div class="top"><div class="name">Degradation</div><div class="tag">mu · stop_reasons</div></div><div class="big">${degPct.toFixed(1)}<span class="cur">%</span></div><div class="meta">non-clean finishes — degraded / abort / error / truncated</div><div class="bar"><i style="width:${Math.min(100,degPct).toFixed(1)}%"></i></div></div>
     </div>
@@ -448,22 +501,22 @@ function renderOverview(v){
       <div class="panel col-3"><div class="ph"><div><div class="ttl">Outcome classifier status</div><div class="desc">commit/PR enricher pending; not a reliable quality split yet</div></div></div><div style="padding:10px 2px 2px;color:var(--fg-mute);font-size:12px;line-height:1.55"><b class="mono" style="color:var(--amber)">${artifactOutcome?n0.format(artifactOutcome.sessions):0}</b> sessions are currently classified as <span class="mono">narrative_no_action</span>${artifactShare?` (${pct(artifactShare,1)})`:''}. Use stop-reason degradation, audit findings, and manual marks for review until enrichment lands.</div></div>
       <div class="panel col-12"><div class="ph"><div><div class="ttl">Cost &amp; degradation over time</div><div class="desc">daily rate-equiv spend (area) vs output-degradation rate (line), with your session ratings as points</div></div><div class="hint">$/day · degradation %</div></div><div class="chart" id="o-trend" style="height:270px"></div></div>
     </div>
-    <div class="foot"><div>mu observability · <span class="mono">overview</span></div><div class="mono">${n0.format(totS)} sessions · ${nHarness} harness${nHarness===1?'':'es'} · ${DATA.cost_by_model.length} models</div></div>`;
+    <div class="foot"><div>mu observability · <span class="mono">overview</span></div><div class="mono">${n0.format(totS)} sessions · ${nHarness} harness${nHarness===1?'':'es'} · ${VIEW.cost_by_model.length} models</div></div>`;
 
   // charts
-  barH('o-fleet', DATA.cost_by_fleet.map(r=>({label:fleetName(r.label),val:r.cost,color:FLEET_COLOR[r.label],sub:r.sessions+' sess',dim:emph(r.label)})), 36);
-  barH('o-model', DATA.cost_by_model.slice().sort((a,b)=>a.cost-b.cost).map(r=>({label:r.model.replace('google/','').replace('claude-',''),val:r.cost,color:FLEET_COLOR[r.fleet],sub:fleetName(r.fleet),dim:emph(r.fleet)})), 13);
+  barH('o-fleet', VIEW.cost_by_fleet.map(r=>({label:fleetName(r.label),val:r.cost,color:FLEET_COLOR[r.label],sub:r.sessions+' sess',dim:emph(r.label)})), 36);
+  barH('o-model', VIEW.cost_by_model.slice().sort((a,b)=>a.cost-b.cost).map(r=>({label:r.model.replace('google/','').replace('claude-',''),val:r.cost,color:FLEET_COLOR[r.fleet],sub:fleetName(r.fleet),dim:emph(r.fleet)})), 13);
   trendChart('o-trend', true);
 }
 
 /* ---------- SESSIONS ---------- */
 function renderSessions(v, params=new URLSearchParams()){ 
-  const all=(DATA.all_sessions&&DATA.all_sessions.length)?DATA.all_sessions:(DATA.top_sessions||[]);
+  const all=(VIEW.all_sessions&&VIEW.all_sessions.length)?VIEW.all_sessions:(VIEW.top_sessions||[]);
   const models=[...new Set(all.map(s=>s.model))].sort();
   const outs=[...new Set(all.map(s=>s.outcome))].sort();
   const opt=(arr,ph)=>`<option value="">${ph}</option>`+arr.map(x=>`<option>${x}</option>`).join('');
   const q0=params.get('q')||params.get('open')||'';
-  v.innerHTML = pageHead('Sessions',`All ${n0.format(all.length)} sessions across both harnesses, grouped by day. Filter, or expand a day; click a row to open it and rate. Fleet highlight dims off-fleet rows; totals remain global.`,'both')+`
+  v.innerHTML = pageHead('Sessions',`${n0.format(all.length)} sessions in scope, grouped by day. Use the fleet selector to scope to mu or claude-code; filter or expand a day; click a row to open it and rate.`,'auto')+`
 
     <div class="panel">
       <div class="ph" style="align-items:center;flex-wrap:wrap;gap:10px">
@@ -495,18 +548,18 @@ function renderCost(v){
   const gaps=[]; for(let g=1;g<=60;g++) gaps.push(g);
   const c5=gaps.map(g=>+sessCost(g,5,MULT.write_5m).toFixed(2));
   const c1h=gaps.map(g=>+sessCost(g,60,MULT.write_1h).toFixed(2));
-  const ce=DATA.cache_econ||{};
+  const ce=VIEW.cache_econ||{};
   const med=+(ce.median_gap_min||0), p90=+(ce.p90_gap_min||0), saveP90=+(ce.save_pct_p90||0);
   const w5=ce.w5_tokens||0, w1=ce.w1_tokens||0, oneHr=(w5+w1)?Math.round(w1/(w5+w1)*100):0;
   const exp5=ce.expired_5m_count||0, near5=ce.near_miss_4_6m_count||0, gapsN=ce.gap_count||0;
-  const perAskAll=(DATA.per_ask_sessions||[]).flatMap(s=>s.asks.map(a=>a.cost)).sort((a,b)=>a-b);
+  const perAskAll=(VIEW.per_ask_sessions||[]).flatMap(s=>s.asks.map(a=>a.cost)).sort((a,b)=>a-b);
   const perAskMed=perAskAll.length?perAskAll[Math.floor(perAskAll.length/2)]:0;
-  const co=DATA.cost_composition_top_session||{}, ctot=Object.values(co).reduce((a,b)=>a+b,0)||1;
-  const topCost=(DATA.top_sessions||[])[0]||{};
+  const co=VIEW.cost_composition_top_session||{}, ctot=Object.values(co).reduce((a,b)=>a+b,0)||1;
+  const topCost=(VIEW.top_sessions||[])[0]||{};
   const topCostLabel=topCost.id ? `${topCost.id} · ${(topCost.model||'').replace('claude-','')} · ${topCost.started||''}` : '—';
   const crShare=Math.round((co.cache_read||0)/ctot*100);
 
-  v.innerHTML = pageHead('Cost &amp; Cache','Where the dollars go, and the cache-tier economics that move them. Interactive — the cache model uses live config multipliers.','both')+`
+  v.innerHTML = pageHead('Cost &amp; Cache','Where the dollars go, and the cache-tier economics that move them. Interactive — the cache model uses live config multipliers.','auto')+`
     <div class="kpis k4">
       <div class="kpi"><div class="top"><div class="name">Per-ask · median</div><div class="tag">rate-equiv</div></div><div class="big"><span class="cur">$</span>${money(perAskMed).replace('$','')}</div><div class="meta">median across sampled sessions</div></div>
       <div class="kpi accent"><div class="top"><div class="name">1h-cache adoption</div><div class="tag">of writes</div></div><div class="big">${oneHr}<span class="cur">%</span></div><div class="meta">already on 1h · saves ${saveP90.toFixed(0)}% at the p90 ${p90.toFixed(1)}min gap</div></div>
@@ -540,7 +593,7 @@ function renderCost(v){
   })();
   // per-ask bars — selectable session, x = turn order, colour = cache read vs write
   (function(){
-    const sessions=DATA.per_ask_sessions||[];
+    const sessions=VIEW.per_ask_sessions||[];
     const sel=document.getElementById('perask-sel'), title=document.getElementById('pa-title');
     if(!sessions.length){ const c=mk('cc-perask'); if(c)c.setOption({graphic:{type:'text',left:'center',top:'middle',style:{text:'no per-ask data',fill:fgmute(),fontSize:12}}}); if(sel)sel.style.display='none'; if(title)title.textContent='no data'; return; }
     sel.innerHTML=sessions.map((s,i)=>`<option value="${i}">${s.id} · ${s.model.replace('claude-','')} · ${money(s.cost,s.cost>=100?0:2)}</option>`).join('');
@@ -558,25 +611,25 @@ function renderCost(v){
     draw(0);
     sel.addEventListener('change',()=>draw(+sel.value));
   })();
-  donut('cc-kind', DATA.cost_by_kind);
-  comp('cc-comp', DATA.cost_composition_top_session);
+  donut('cc-kind', VIEW.cost_by_kind);
+  comp('cc-comp', VIEW.cost_composition_top_session);
 }
 
 /* ---------- BEHAVIORAL ---------- */
 function renderBehavioral(v){
-  v.innerHTML = pageHead('Behavioral','Review workbench for sessions that deserve attention. This page combines machine, audit, runtime, and manual signals; the classifier-artifact outcome/hallucination summaries are intentionally not shown here.','both')+`
+  v.innerHTML = pageHead('Behavioral','Review workbench for sessions that deserve attention. This page combines machine, audit, runtime, and manual signals; the classifier-artifact outcome/hallucination summaries are intentionally not shown here.','auto')+`
     <div class="caveat" style="margin-bottom:16px"><div class="ic">!</div><div class="body"><b>Review queue, not verdicts.</b> Rows below are candidate attention signals: degraded stops, tool-error loops, self-flags, deterministic audit findings, telemetry/sentiment residuals, and local low ratings. Open the linked session before treating a row as ground truth.</div></div>
     <div class="grid">
       <div class="panel col-12"><div class="ph" style="align-items:center;gap:12px;flex-wrap:wrap"><div><div class="ttl">Attention queue</div><div class="desc" id="bq-count">sessions and findings that need human review</div></div><div class="tbl-tools"><select id="bq-source" class="fin"><option value="">all signals</option><option value="runtime">runtime</option><option value="audit">audit</option><option value="ml">ml residual</option><option value="mark">manual mark</option></select><select id="bq-sev" class="fin"><option value="">all severity</option><option value="high">high</option><option value="med">medium</option><option value="low">low</option></select></div></div><div class="queue" id="b-workbench"></div></div>
       <div class="panel col-7"><div class="ph"><div><div class="ttl">Degradation over time · with your ratings</div><div class="desc">computed stop-reason degradation with sparse manual session-ratings dropped on as points</div></div><div class="hint" id="b-mark-summary">degradation % · ★ rating</div></div><div class="chart" id="b-trend" style="height:240px"></div></div>
       <div class="panel col-5"><div class="ph"><div><div class="ttl">Signal mix</div><div class="desc">why rows entered the queue</div></div><div class="hint" id="b-signal-h">—</div></div><div class="chart" id="b-signals" style="height:240px"></div></div>
       <div class="panel col-7"><div class="ph"><div><div class="ttl">Telemetry → operator-sentiment probe</div><div class="desc">residual tails where telemetry and operator sentiment disagree</div></div><div class="hint" id="b-probe-skill"></div></div><div id="b-probe" style="margin-top:8px"></div></div>
-      <div class="panel col-5"><div class="ph"><div><div class="ttl">mu-audit process findings</div><div class="desc">deterministic process-layer auditors (mu audit) over the event log</div></div><div class="hint">${(DATA.audit_findings||[]).length} findings</div></div><div id="b-audit" style="margin-top:8px"></div></div>
+      <div class="panel col-5"><div class="ph"><div><div class="ttl">mu-audit process findings</div><div class="desc">deterministic process-layer auditors (mu audit) over the event log</div></div><div class="hint">${(VIEW.audit_findings||[]).length} findings</div></div><div id="b-audit" style="margin-top:8px"></div></div>
     </div>`;
   degTrend('b-trend');
-  const MS=(DATA.meta&&DATA.meta.mark_summary)||{marks:(DATA.marks||[]).length,sessions:0,days:0};
+  const MS=(VIEW.meta&&VIEW.meta.mark_summary)||{marks:(VIEW.marks||[]).length,sessions:0,days:0};
   const msh=document.getElementById('b-mark-summary'); if(msh)msh.textContent=`${MS.marks} marks · ${MS.sessions} sessions · ${MS.days} days`;
-  const P=DATA.degradation_probe||{}, A=DATA.audit_findings||[], F=DATA.flagged_queue||[];
+  const P=VIEW.degradation_probe||{}, A=VIEW.audit_findings||[], F=VIEW.flagged_queue||[];
   const sevRank={high:0,med:1,low:2};
   const normSev=x=>{x=String(x||'').toLowerCase(); return x==='critical'||x==='error'||x==='deg'||x==='err'?'high':(x==='warn'||x==='warning'||x==='medium'?'med':'low');};
   const refId=r=>r.session_id||r.id||r.ref||'';
@@ -631,17 +684,17 @@ function renderInternalOps(v){
     </div>`;
   // trajectory sawtooth
   (function(){ const c=mk('i-traj'); if(!c)return;
-    const d=DATA.context_trajectory.map(x=>+(x).toFixed(0));
+    const d=VIEW.context_trajectory.map(x=>+(x).toFixed(0));
     c.setOption({grid:{left:8,right:14,top:14,bottom:24,containLabel:true},
       tooltip:{...baseTooltip(),trigger:'axis',formatter:p=>`turn <b>${p[0].axisValue}</b><br/>${p[0].value}k tokens`},
       xAxis:{type:'category',data:d.map((_,i)=>i+1),boundaryGap:false,axisLine:{lineStyle:{color:GRID}},axisTick:{show:false},axisLabel:{color:fgmute(),fontFamily:"'JetBrains Mono',monospace",fontSize:9,interval:2}},
       yAxis:{type:'value',axisLabel:{color:fgmute(),fontFamily:"'JetBrains Mono',monospace",fontSize:10,formatter:v=>v+'k'},splitLine:{lineStyle:{color:GRID}},axisLine:{show:false},axisTick:{show:false}},
       series:[{type:'line',data:d,smooth:false,symbol:'none',lineStyle:{color:accent(),width:2},
         areaStyle:{color:new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:'rgba(51,201,163,0.20)'},{offset:1,color:'rgba(51,201,163,0.01)'}])},
-        markPoint:{symbol:'circle',symbolSize:7,itemStyle:{color:amber()},data:DATA.context_compactions.map(i=>({coord:[i,d[i]],value:'compaction'})),label:{show:false}}}]});
+        markPoint:{symbol:'circle',symbolSize:7,itemStyle:{color:amber()},data:VIEW.context_compactions.map(i=>({coord:[i,d[i]],value:'compaction'})),label:{show:false}}}]});
   })();
   // compaction donut
-  (function(){ const c=mk('i-comp'); if(!c)return; const m=DATA.compaction.mu;
+  (function(){ const c=mk('i-comp'); if(!c)return; const m=VIEW.compaction.mu;
     const parts=[{n:'kept',v:m.kept,c:slate()},{n:'summarized',v:m.summarized,c:accent()},{n:'dropped',v:m.dropped,c:blue()},{n:'failed',v:m.failed,c:cssVar('--red')}];
     c.setOption({tooltip:{...baseTooltip(),trigger:'item',formatter:p=>`<b>${p.name}</b><br/>${p.value} spans · ${pct(p.percent/100,0)}`},
       series:[{type:'pie',radius:['56%','82%'],center:['50%','50%'],itemStyle:{borderColor:'#12161d',borderWidth:2},label:{show:false},
@@ -651,7 +704,7 @@ function renderInternalOps(v){
     document.getElementById('i-comp-l').innerHTML=parts.map(p=>`<div class="it"><span class="sw" style="background:${p.c}"></span>${p.n} <b>${p.v}</b></div>`).join('');
   })();
   (function(){ const c=mk('i-tools'); if(!c)return;
-    const rows=(DATA.tool_mix||[]).slice().sort((a,b)=>a.count-b.count), labels=rows.map(r=>r.tool);
+    const rows=(VIEW.tool_mix||[]).slice().sort((a,b)=>a.count-b.count), labels=rows.map(r=>r.tool);
     c.setOption({grid:{left:6,right:72,top:8,bottom:6,containLabel:true},
       tooltip:{...baseTooltip(),trigger:'axis',axisPointer:{type:'shadow'},formatter:p=>{const i=p[0].dataIndex,r=rows[i];return `<b>${r.tool}</b><br/>mu ${n0.format(r.mu||0)} · cc ${n0.format(r.cc||0)}<br/>total ${n0.format(r.count)}`;}},
       legend:{data:['mu','cc'],top:0,right:8,textStyle:{color:LBL,fontSize:10,fontFamily:"'JetBrains Mono',monospace"},itemWidth:12,itemHeight:8},
@@ -662,12 +715,12 @@ function renderInternalOps(v){
         {name:'cc',type:'bar',stack:'tools',barWidth:12,data:rows.map(r=>({value:r.cc||0,itemStyle:{color:blue(),borderRadius:[0,4,4,0]}})),label:{show:true,position:'right',color:'#cdd4dd',fontFamily:"'JetBrains Mono',monospace",fontSize:11,formatter:p=>n0.format(rows[p.dataIndex].count)}}
       ]});
   })();
-  barH('i-recall', DATA.recall.slice().sort((a,b)=>a.tokens-b.tokens).map(r=>({label:r.source,val:r.tokens,color:cssVar('--violet'),raw:true,sub:r.items+' items'})), 22);
+  barH('i-recall', VIEW.recall.slice().sort((a,b)=>a.tokens-b.tokens).map(r=>({label:r.source,val:r.tokens,color:cssVar('--violet'),raw:true,sub:r.items+' items'})), 22);
 }
 
 /* ---------- DELEGATIONS ---------- */
 function renderDelegations(v){
-  const D=DATA.delegations||{workers:[],orchestrators:0,by_outcome:[],mailbox:{posted:0,consumed:0,by_kind:[]}};
+  const D=VIEW.delegations||{workers:[],orchestrators:0,by_outcome:[],mailbox:{posted:0,consumed:0,by_kind:[]}};
   const W=D.workers||[];
   const oc=o=>o==='exited'?'var(--accent)':(o==='failed'||o==='exit-nonzero')?'var(--red)':o==='timeout'?'var(--amber)':'var(--fg-mute)';
   const models=[...new Set(W.map(w=>w.model))].sort();
@@ -740,8 +793,8 @@ function comp(id,co){ const c=mk(id); if(!c)return;
 
 /* shared trend builders */
 function trendData(){
-  if(DATA.trend_by_day && DATA.trend_by_day.length)
-    return DATA.trend_by_day.map(d=>({date:d.date, cost:d.cost, deg:d.degradation}));
+  if(VIEW.trend_by_day && VIEW.trend_by_day.length)
+    return VIEW.trend_by_day.map(d=>({date:d.date, cost:d.cost, deg:d.degradation}));
   const start=new Date(2026,3,22),out=[];   // synthetic fallback (no real trend)
   for(let i=0;i<51;i++){ const d=new Date(start); d.setDate(d.getDate()+i);
     let cost=120+90*Math.sin(i/4.2)+70*Math.sin(i/11.0)+1.6*i;
@@ -749,16 +802,16 @@ function trendData(){
     out.push({date:d.toISOString().slice(0,10),cost:Math.max(35,cost),deg:Math.max(0,deg)}); }
   return out;
 }
-function markPoints(t){ // aggregate DATA.marks by date so same-day labels don't hide each other
+function markPoints(t){ // aggregate VIEW.marks by date so same-day labels don't hide each other
   const byDate=new Map();
-  (DATA.marks||[]).forEach(m=>{ const a=byDate.get(m.date)||{date:m.date, ratings:[], notes:[], refs:[]}; a.ratings.push(+m.rating||3); if(m.note)a.notes.push(m.note); if(m.session_ref)a.refs.push(m.session_ref); byDate.set(m.date,a); });
+  (VIEW.marks||[]).forEach(m=>{ const a=byDate.get(m.date)||{date:m.date, ratings:[], notes:[], refs:[]}; a.ratings.push(+m.rating||3); if(m.note)a.notes.push(m.note); if(m.session_ref)a.refs.push(m.session_ref); byDate.set(m.date,a); });
   return [...byDate.values()].map(m=>{ const idx=t.findIndex(d=>d.date>=m.date), ti=idx<0?t.length-1:idx, avg=m.ratings.reduce((a,b)=>a+b,0)/m.ratings.length; return {idx:ti, rating:+avg.toFixed(1), count:m.ratings.length, note:m.notes.slice(0,3).join('\n---\n'), refs:m.refs, deg:t[ti].deg}; });
 }
 function trendChart(id,withMarks){ const c=mk(id); if(!c)return; const t=trendData(), mp=markPoints(t);
   // incident reports + per-day automation findings placed on the trend's date axis
   const xidx=dt=>{const i=t.findIndex(d=>d.date>=dt);return i<0?t.length-1:i;};
-  const inc=(DATA.incidents||[]).map(i=>({idx:xidx(i.date),title:i.title||'',pol:i.polarity}));
-  const au=(DATA.automation_by_day||[]).map(a=>({idx:xidx(a.date),count:a.count}));
+  const inc=(VIEW.incidents||[]).map(i=>({idx:xidx(i.date),title:i.title||'',pol:i.polarity}));
+  const au=(VIEW.automation_by_day||[]).map(a=>({idx:xidx(a.date),count:a.count}));
   const polC=p=>p==='positive'?'#33c9a3':'#e5534b';
   c.setOption({grid:{left:10,right:14,top:22,bottom:26,containLabel:true},
     tooltip:{...baseTooltip(),trigger:'axis',axisPointer:{type:'cross',crossStyle:{color:'#3a4350'},lineStyle:{color:'#3a4350'}},
@@ -789,13 +842,13 @@ function degTrend(id){ const c=mk(id); if(!c)return; const t=trendData(), mp=mar
 let SS={search:'',model:'',outcome:'',flaggedOnly:false,openDays:null,open:null};
 function sessionTable(initial={}){
   const host=document.getElementById('sess-days'); if(!host)return;
-  const ALL=(DATA.all_sessions&&DATA.all_sessions.length)?DATA.all_sessions:(DATA.top_sessions||[]);
-  const idx=(DATA.session_index&&DATA.session_index.by_alias)||{};
+  const ALL=(VIEW.all_sessions&&VIEW.all_sessions.length)?VIEW.all_sessions:(VIEW.top_sessions||[]);
+  const idx=(VIEW.session_index&&VIEW.session_index.by_alias)||{};
   const byId=Object.fromEntries(ALL.map(s=>[s.id,s]));
   const resolveSessionId=x=>byId[x]?x:(idx[x]||'');
   const initialOpen=resolveSessionId(initial.open||'');
   SS={search:initial.search||'',model:'',outcome:'',flaggedOnly:false,openDays:null,open:initialOpen||null};  // fresh each page entry
-  const ratio=(()=>{const co=DATA.cost_composition_top_session,t=Object.values(co).reduce((a,b)=>a+b,0);const o={};for(const k in co)o[k]=co[k]/t;return o;})();
+  const ratio=(()=>{const co=VIEW.cost_composition_top_session,t=Object.values(co).reduce((a,b)=>a+b,0);const o={};for(const k in co)o[k]=co[k]/t;return o;})();
   function compFor(s){return {input:s.cost*ratio.input,output:s.cost*ratio.output,cache_read:s.cost*ratio.cache_read,cache_write:s.cost*ratio.cache_write};}
   const whoLabel=w=>w==='u'?'user':w==='a'?'agent':'tool';
   // Each session's FULL conversation lives in its own sidecar (sessions/<slug>.json,
@@ -950,6 +1003,7 @@ function route(){
   const hs=hashState(); let id=hs.id; const p=PAGES.find(x=>x.id===id&&!x.stub);
   if(!p){ location.hash='#/overview'; return; }
   STATE.page=id;
+  VIEW = scopedData(STATE.fleet);   // scope the whole contract to the selected fleet
   document.querySelectorAll('#menu a').forEach(a=>a.classList.toggle('on',a.dataset.id===id));
   document.getElementById('pg-name').textContent=p.title;
   disposeCharts();
@@ -958,9 +1012,9 @@ function route(){
 }
 function init(){
   buildNav();
-  document.getElementById('side-asof').textContent=new Date(DATA.as_of).toLocaleString('en-US',{month:'short',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false});
+  document.getElementById('side-asof').textContent=new Date(VIEW.as_of).toLocaleString('en-US',{month:'short',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false});
   // watermark only when the loaded dataset is synthetic (MU_ANALYTICS_DEMO); real data shows none.
-  if((DATA.note||'').toUpperCase().includes('SYNTHETIC')) document.getElementById('demo-rib').style.display='';
+  if((VIEW.note||'').toUpperCase().includes('SYNTHETIC')) document.getElementById('demo-rib').style.display='';
   document.getElementById('collapse').addEventListener('click',()=>{document.body.classList.toggle('collapsed');setTimeout(()=>CHARTS.forEach(c=>{try{c.resize();}catch(e){}}),200);});
   document.querySelectorAll('#fleet button').forEach(b=>b.addEventListener('click',()=>{
     document.querySelectorAll('#fleet button').forEach(x=>x.classList.remove('on')); b.classList.add('on');
