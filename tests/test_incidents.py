@@ -81,6 +81,27 @@ class TestIncidents(unittest.TestCase):
             ],
         )
 
+    def test_multiple_dirs_union_first_wins(self):
+        d1 = self._dir({"incident-2026-06-20-a.md": "# A from d1\n"})
+        d2 = self._dir(
+            {
+                "incident-2026-06-20-a.md": "# A from d2 (shadowed)\n",
+                "incident-2026-06-18-b.md": "# B only in d2\n",
+            }
+        )
+        rows = incidents.load([d1, d2])
+        # union by filename, date-sorted; the FIRST dir wins a basename collision
+        self.assertEqual(
+            [r["file"] for r in rows],
+            ["incident-2026-06-18-b.md", "incident-2026-06-20-a.md"],
+        )
+        a = next(r for r in rows if r["file"] == "incident-2026-06-20-a.md")
+        self.assertEqual(a["title"], "A from d1")
+
+    def test_str_arg_back_compat(self):
+        d = self._dir({"incident-2026-06-20-x.md": "# X\n"})
+        self.assertEqual(len(incidents.load(d)), 1)  # a single path string still works
+
 
 if __name__ == "__main__":
     unittest.main()

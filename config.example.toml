@@ -106,14 +106,21 @@ positives = {}
 meta_sessions = []
 
 # ── Incident-report timeline (Overview cost/degradation overlay) ──────────
-# incidents.py reads dated report files (incident-YYYY-MM-DD-*.md etc.) from this
-# dir and overlays them on the Overview timeline, colored issue vs positive, with
-# session_refs extracted for alignment with marks (incident-session-provenance).
-# DEPLOYMENT: this path must resolve ON THE DASHBOARD HOST. The notes dir is NOT
-# part of the ai-sessions sync today, so either add a sync step or point `dir` at a
-# synced copy. An absent/empty dir just yields no incident markers (non-fatal).
+# incidents.py reads dated report files (incident-YYYY-MM-DD-*.md etc.) and overlays
+# them on the Overview timeline, colored issue vs positive, with session_refs
+# extracted for alignment with marks (incident-session-provenance).
+#
+# `dirs` lists every notes location to union (first dir wins a filename collision);
+# `dir` is the single-path shorthand. On the dashboard host, point `dirs` at BOTH
+# the consolidated cross-machine archive AND this host's own local notes:
+#   - other machines push ~/.claude/notes -> rsync://<host>/ai-sessions/notes/ via
+#     their sync-claude-logs cron (the rsyncd 'ai-sessions' module = ~/ai-sessions),
+#   - this host's own notes are read directly from ~/.claude/notes.
+# An absent dir is skipped (non-fatal); with none present there are no markers.
 [incidents]
-dir = "/home/USER/.claude/notes"
+dirs = ["/home/USER/ai-sessions/notes", "/home/USER/.claude/notes"]
+# Single-dir shorthand (used only if `dirs` is absent):
+# dir = "/home/USER/.claude/notes"
 # filename-prefix -> timeline polarity. Extends the built-in defaults
 # {incident = "issue", checkpoint = "positive"}; unmapped prefixes are skipped so
 # design notes don't clutter the timeline. Add your own, e.g. win = "positive".

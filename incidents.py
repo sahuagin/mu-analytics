@@ -3,8 +3,11 @@
 incident reports / postmortems into dated events for the Overview cost+degradation
 timeline.
 
-The operator writes reports into a notes dir (default ~/.claude/notes). Each file
-becomes {date, title, polarity, kind, slug, session_refs, file}. Polarity is by
+The operator writes reports into one or more notes dirs ([incidents].dirs, or the
+single-path [incidents].dir; default ~/.claude/notes) — on the dashboard host that
+is the consolidated cross-machine archive plus the host's own local notes, unioned
+by filename. Each file becomes {date, title, polarity, kind, slug, session_refs,
+file}. Polarity is by
 filename prefix and is config-overridable ([incidents].polarity):
   incident-*  -> issue      (something went wrong; a postmortem)
   checkpoint-* -> positive  (landed work / validated milestone)
@@ -32,7 +35,11 @@ if not os.path.exists(_CFG):
 _cfg = tomllib.load(open(_CFG, "rb"))
 _icfg = _cfg.get("incidents", {})
 
-DIR = os.path.expanduser(_icfg.get("dir", "~/.claude/notes"))
+# Notes dirs: [incidents].dirs (list) wins; else [incidents].dir (str); default
+# ~/.claude/notes. Multiple dirs let the dashboard host read the consolidated
+# cross-machine archive AND its own local notes in one pass (union by filename).
+_raw_dirs = _icfg.get("dirs") or [_icfg.get("dir", "~/.claude/notes")]
+DIRS = [os.path.expanduser(d) for d in _raw_dirs]
 # filename-prefix -> timeline polarity; [incidents].polarity overrides/extends.
 POLARITY = {"incident": "issue", "checkpoint": "positive"}
 POLARITY.update(_icfg.get("polarity", {}))
@@ -72,47 +79,61 @@ def _refs(body):
     return out
 
 
-def load(dir_=None):
-    """Parse incident reports -> [{date,title,polarity,kind,slug,session_refs,file}],
-    date-sorted. Empty when the dir is absent (CI / a host without the notes mount)."""
-    d = os.path.expanduser(dir_ or DIR)
+def load(dirs=None):
+    """Parse incident reports from one or more notes dirs ->
+    [{date,title,polarity,kind,slug,session_refs,file}], date-sorted. Dirs are
+    unioned by filename (first dir wins on a basename collision), so the dashboard
+    host can read the consolidated cross-machine archive AND its own local notes in
+    one pass. Accepts a single path (str) or a list; defaults to the configured
+    DIRS. Empty when no dir exists (CI / a host without the notes mount)."""
+    if dirs is None:
+        dirs = DIRS
+    elif isinstance(dirs, str):
+        dirs = [dirs]
+    seen = set()
     out = []
-    if not os.path.isdir(d):
-        return out
-    for path in sorted(glob.glob(os.path.join(d, "*.md"))):
-        name = os.path.basename(path)[:-3]  # strip .md
-        kind = name.split("-", 1)[0]
-        polarity = POLARITY.get(kind)
-        if polarity is None:
-            continue  # not a report we put on the timeline
-        dm = _DATE.search(name)
-        if not dm:
+    for d in dirs:
+        d = os.path.expanduser(d)
+        if not os.path.isdir(d):
             continue
-        date = dm.group(1)
-        slug = name.replace(f"{kind}-", "", 1).replace(date, "").strip("-")
-        try:
-            with open(path, errors="ignore") as fh:
-                body = fh.read()
-        except OSError:
-            body = ""
-        out.append(
-            {
-                "date": date,
-                "title": _title(path),
-                "polarity": polarity,
-                "kind": kind,
-                "slug": slug,
-                "session_refs": _refs(body),
-                "file": name + ".md",
-            }
-        )
+        for path in sorted(glob.glob(os.path.join(d, "*.md"))):
+            fname = os.path.basename(path)
+            if fname in seen:
+                continue  # first dir wins on a basename collision
+            seen.add(fname)
+            name = fname[:-3]  # strip .md
+            kind = name.split("-", 1)[0]
+            polarity = POLARITY.get(kind)
+            if polarity is None:
+                continue  # not a report we put on the timeline
+            dm = _DATE.search(name)
+            if not dm:
+                continue
+            date = dm.group(1)
+            slug = name.replace(f"{kind}-", "", 1).replace(date, "").strip("-")
+            try:
+                with open(path, errors="ignore") as fh:
+                    body = fh.read()
+            except OSError:
+                body = ""
+            out.append(
+                {
+                    "date": date,
+                    "title": _title(path),
+                    "polarity": polarity,
+                    "kind": kind,
+                    "slug": slug,
+                    "session_refs": _refs(body),
+                    "file": fname,
+                }
+            )
     out.sort(key=lambda e: e["date"])
     return out
 
 
 if __name__ == "__main__":
     rows = load()
-    print(f"{len(rows)} report(s) from {DIR}:")
+    print(f"{len(rows)} report(s) from {', '.join(DIRS)}:")
     for e in rows:
         print(f"  {e['date']}  [{e['polarity']:8}] {e['title'][:70]}")
         if e["session_refs"]:
