@@ -393,44 +393,123 @@ const DATA = /*BEGIN_DATA*/{
    the already-fleet-keyed arrays. Methodology mirrors sample_data.build() so a
    single-fleet view matches what the server would emit for that fleet. */
 let VIEW = DATA;
-const HALLU_OUTCOMES = new Set(['narrative_no_action','hollow_commit','lying_state']); // == sample_data.HALLU
+// Outcome classes that count as hallucinations; mirrors sample_data.HALLU.
+const HALLU_OUTCOMES = new Set(['narrative_no_action', 'hollow_commit', 'lying_state']);
+
 function scopedData(fleet){
-  if(fleet!=='mu' && fleet!=='cc') return DATA;
-  const base=(DATA.all_sessions&&DATA.all_sessions.length)?DATA.all_sessions:(DATA.top_sessions||[]);
-  const sess=base.filter(s=>s.fleet===fleet);
-  const r2=x=>+(+x||0).toFixed(2), r3=x=>+(+x||0).toFixed(3);
-  // cost_by_kind + kpi
-  const kindM=new Map();
-  sess.forEach(s=>{const k=kindM.get(s.kind)||{label:s.kind,sessions:0,cost:0}; k.sessions++; k.cost+=+s.cost||0; kindM.set(s.kind,k);});
-  const cost_by_kind=[...kindM.values()].map(k=>({label:k.label,sessions:k.sessions,cost:r2(k.cost)})).sort((a,b)=>b.cost-a.cost);
-  const total=r2(sess.reduce((x,s)=>x+(+s.cost||0),0));
-  const byKindCost={}; cost_by_kind.forEach(k=>byKindCost[k.label]=k.cost);
-  // cost_by_model
-  const modM=new Map();
-  sess.forEach(s=>{const m=modM.get(s.model)||{fleet,model:s.model,sessions:0,cost:0}; m.sessions++; m.cost+=+s.cost||0; modM.set(s.model,m);});
-  const cost_by_model=[...modM.values()].map(m=>({fleet,model:m.model,sessions:m.sessions,cost:r2(m.cost)})).sort((a,b)=>b.cost-a.cost).slice(0,8);
-  // outcomes
-  const outM=new Map();
-  sess.forEach(s=>{const o=s.outcome||'unclassified'; outM.set(o,(outM.get(o)||0)+1);});
-  const outcomes=[...outM.entries()].map(([outcome,sessions])=>({outcome,sessions})).sort((a,b)=>b.sessions-a.sessions);
-  // hallucination rate per model (tool-using sessions, denom>=3)
-  const hd=new Map();
-  sess.forEach(s=>{ if((+s.tool_calls||0)>0){ const h=hd.get(s.model)||{model:s.model,denom:0,num:0}; h.denom++; if(HALLU_OUTCOMES.has(s.outcome))h.num++; hd.set(s.model,h);} });
-  const hallucination_by_model=[...hd.values()].filter(h=>h.denom>=3).map(h=>({fleet,model:h.model,rate:r3(h.num/h.denom),sessions:h.denom})).sort((a,b)=>b.sessions-a.sessions).slice(0,10);
-  // trend_by_day — cost + degradation (hallu / tool-using per day); shape == server's
-  const dM=new Map();
-  sess.forEach(s=>{const d=s.started||''; if(!d)return; const e=dM.get(d)||{date:d,cost:0,den:0,num:0}; e.cost+=+s.cost||0; if((+s.tool_calls||0)>0){e.den++; if(HALLU_OUTCOMES.has(s.outcome))e.num++;} dM.set(d,e);});
-  const trend_by_day=[...dM.values()].sort((a,b)=>a.date<b.date?-1:1).map(e=>({date:e.date,cost:r2(e.cost),degradation:e.den?r3(e.num/e.den):0}));
-  const byFleet=a=>(a||[]).filter(x=>x.fleet===fleet);
-  // top_sessions stays global on purpose: the Cost page pairs it with
-  // cost_composition_top_session (per-token breakdown), which can't be recomputed
-  // client-side — scoping the label but not the donut would make them disagree.
-  return {...DATA,
-    kpi:{total_api_rate_equiv:total, by_kind:{subscription:byKindCost.subscription||0, billed:byKindCost.billed||0, free:byKindCost.free||0}},
-    cost_by_kind, cost_by_fleet:[{label:fleet,sessions:sess.length,cost:total}],
-    cost_by_model, outcomes, hallucination_by_model, trend_by_day, all_sessions:sess,
-    flagged_queue:byFleet(DATA.flagged_queue),
-    degradation_rate: fleet==='mu' ? DATA.degradation_rate : 0,  // mu stop-reason signal; cc emits none
+  // 'both' (or anything unexpected) renders the raw server contract untouched.
+  if(fleet !== 'mu' && fleet !== 'cc') return DATA;
+
+  const round2 = n => +(+n || 0).toFixed(2);
+  const round3 = n => +(+n || 0).toFixed(3);
+  const usedTools = session => (+session.tool_calls || 0) > 0;
+  const isHallucination = session => HALLU_OUTCOMES.has(session.outcome);
+
+  // Per-session rows are the source we re-aggregate everything from. all_sessions
+  // carries fleet / kind / cost / outcome / model / tool_calls / started.
+  const allRows = (DATA.all_sessions && DATA.all_sessions.length) ? DATA.all_sessions : (DATA.top_sessions || []);
+  const sessions = allRows.filter(session => session.fleet === fleet);
+  const totalCost = round2(sessions.reduce((sum, session) => sum + (+session.cost || 0), 0));
+
+  // Cost + session count grouped by billing kind (subscription / billed / free).
+  const kindTotals = new Map();
+  for(const session of sessions){
+    const row = kindTotals.get(session.kind) || { label: session.kind, sessions: 0, cost: 0 };
+    row.sessions += 1;
+    row.cost += +session.cost || 0;
+    kindTotals.set(session.kind, row);
+  }
+  const costByKind = [...kindTotals.values()]
+    .map(row => ({ label: row.label, sessions: row.sessions, cost: round2(row.cost) }))
+    .sort((a, b) => b.cost - a.cost);
+  const costForKind = Object.fromEntries(costByKind.map(row => [row.label, row.cost]));
+
+  // Cost + session count grouped by model (fleet is fixed to the selection).
+  const modelTotals = new Map();
+  for(const session of sessions){
+    const row = modelTotals.get(session.model) || { fleet, model: session.model, sessions: 0, cost: 0 };
+    row.sessions += 1;
+    row.cost += +session.cost || 0;
+    modelTotals.set(session.model, row);
+  }
+  const costByModel = [...modelTotals.values()]
+    .map(row => ({ fleet, model: row.model, sessions: row.sessions, cost: round2(row.cost) }))
+    .sort((a, b) => b.cost - a.cost)
+    .slice(0, 8);
+
+  // Session count grouped by outcome class.
+  const outcomeCounts = new Map();
+  for(const session of sessions){
+    const outcome = session.outcome || 'unclassified';
+    outcomeCounts.set(outcome, (outcomeCounts.get(outcome) || 0) + 1);
+  }
+  const outcomes = [...outcomeCounts.entries()]
+    .map(([outcome, count]) => ({ outcome, sessions: count }))
+    .sort((a, b) => b.sessions - a.sessions);
+
+  // Hallucination rate per model = hallucination-outcomes / tool-using sessions.
+  // Models with fewer than 3 tool-using sessions are dropped (small-N noise).
+  const modelHallu = new Map();
+  for(const session of sessions){
+    if(!usedTools(session)) continue;
+    const row = modelHallu.get(session.model) || { model: session.model, toolUsing: 0, hallucinated: 0 };
+    row.toolUsing += 1;
+    if(isHallucination(session)) row.hallucinated += 1;
+    modelHallu.set(session.model, row);
+  }
+  const hallucinationByModel = [...modelHallu.values()]
+    .filter(row => row.toolUsing >= 3)
+    .map(row => ({ fleet, model: row.model, rate: round3(row.hallucinated / row.toolUsing), sessions: row.toolUsing }))
+    .sort((a, b) => b.sessions - a.sessions)
+    .slice(0, 10);
+
+  // Daily trend: cost summed per day + a degradation rate (hallucination-outcomes
+  // / tool-using sessions that day). Same {date, cost, degradation} shape the
+  // server emits in trend_by_day.
+  const dayTotals = new Map();
+  for(const session of sessions){
+    const day = session.started || '';
+    if(!day) continue;
+    const row = dayTotals.get(day) || { date: day, cost: 0, toolUsing: 0, hallucinated: 0 };
+    row.cost += +session.cost || 0;
+    if(usedTools(session)){
+      row.toolUsing += 1;
+      if(isHallucination(session)) row.hallucinated += 1;
+    }
+    dayTotals.set(day, row);
+  }
+  const trendByDay = [...dayTotals.values()]
+    .sort((a, b) => a.date < b.date ? -1 : 1)
+    .map(row => ({
+      date: row.date,
+      cost: round2(row.cost),
+      degradation: row.toolUsing ? round3(row.hallucinated / row.toolUsing) : 0,
+    }));
+
+  const onlyThisFleet = rows => (rows || []).filter(row => row.fleet === fleet);
+
+  // top_sessions deliberately stays global: the Cost page pairs it with
+  // cost_composition_top_session (a per-token breakdown) that can't be recomputed
+  // client-side, so scoping the label but not the donut would make them disagree.
+  return {
+    ...DATA,
+    kpi: {
+      total_api_rate_equiv: totalCost,
+      by_kind: {
+        subscription: costForKind.subscription || 0,
+        billed: costForKind.billed || 0,
+        free: costForKind.free || 0,
+      },
+    },
+    cost_by_kind: costByKind,
+    cost_by_fleet: [{ label: fleet, sessions: sessions.length, cost: totalCost }],
+    cost_by_model: costByModel,
+    outcomes,
+    hallucination_by_model: hallucinationByModel,
+    trend_by_day: trendByDay,
+    all_sessions: sessions,
+    flagged_queue: onlyThisFleet(DATA.flagged_queue),
+    degradation_rate: fleet === 'mu' ? DATA.degradation_rate : 0,  // mu stop-reason signal; cc emits none
   };
 }
 
