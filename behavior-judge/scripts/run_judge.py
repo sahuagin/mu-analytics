@@ -42,6 +42,20 @@ def class_rubric(cls):
 ROLE_DEFAULT = "judge"
 
 
+def coerce_json(text):
+    """The verdict object out of a model's reply, or None. Dispatched models wrap the
+    JSON in ```json fences and may emit <think> reasoning first (qwen3 et al.), so the
+    raw reply isn't parseable as-is. Extract the outermost {...} and validate it — that
+    survives fences, thinking, and prose without caring which the model used."""
+    i, j = text.find("{"), text.rfind("}")
+    if i == -1 or j <= i:
+        return None
+    try:
+        return json.loads(text[i : j + 1])
+    except json.JSONDecodeError:
+        return None
+
+
 def role_ladder(role):
     """Ranked `(provider, model)` targets for ROLE, resolved from the operator's
     config via `agent-role` — the alternative to hardcoding a model id. Returns []
@@ -164,13 +178,13 @@ def main():
         for provider, model in ladder:
             t0 = time.time()
             text, ok = dispatch(provider, model, sys_file, args.transcript, args.timeout)
-            if ok:
+            verdict = coerce_json(text) if ok else None
+            if verdict is not None:
                 sys.stderr.write(f"[{args.cls}] {provider}/{model} {time.time() - t0:.0f}s\n")
-                print(text)
+                print(json.dumps(verdict))  # clean JSON to stdout — the parseable contract
                 return
-            sys.stderr.write(
-                f"[{args.cls}] {provider}/{model} unavailable (busy/error) -> next rank\n"
-            )
+            why = "unavailable (busy/error)" if not ok else "returned no parseable JSON"
+            sys.stderr.write(f"[{args.cls}] {provider}/{model} {why} -> next rank\n")
         sys.exit(f"judge: no target in role '{args.role}' produced a verdict")
     finally:
         os.unlink(sys_file)

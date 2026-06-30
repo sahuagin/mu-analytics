@@ -112,6 +112,11 @@ def judge_session(path, classes, timeout):
                     text=True,
                     timeout=timeout,
                 )
+            except subprocess.TimeoutExpired:
+                sys.stderr.write(f"    {cls}: FAILED — timed out after {timeout}s\n")
+                ok = False
+                continue
+            try:
                 v = json.loads(jr.stdout)
                 verdicts.append(
                     {
@@ -122,8 +127,13 @@ def judge_session(path, classes, timeout):
                         "n_evidence": len(v.get("evidence", [])),
                     }
                 )
-            except Exception as e:
-                sys.stderr.write(f"    {cls}: FAILED ({str(e)[:120]})\n")
+            except (json.JSONDecodeError, ValueError):
+                # run_judge.py emits clean JSON on success and the real reason to
+                # stderr on failure (role unresolved / box down / no parseable JSON).
+                # Surface that — a bare "Expecting value" tells us nothing in a cron log.
+                reason = (jr.stderr or "").strip().splitlines()
+                tail = reason[-1] if reason else "(no stderr; empty stdout)"
+                sys.stderr.write(f"    {cls}: FAILED — {tail[:160]}\n")
                 ok = False
         return verdicts, ok
     finally:
