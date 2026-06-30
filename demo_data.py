@@ -309,6 +309,38 @@ def build():
                 "conf": "Definite 0.88",
             },
         ],
+        "frustration_signals": [
+            {
+                "session_ref": "cc:e5f6a7b8",
+                "fleet": "cc",
+                "reason": "frustration",
+                "severity": "high",
+                "hits": 12,
+                "markers": ["stop", "I didn't ask", "you keep"],
+                "ending": "ABRUPT+frustrated",
+                "why": "12 operator-frustration markers (stop, I didn't ask, you keep); abrupt+frustrated exit",
+            },
+            {
+                "session_ref": "mu:a1b2c3d4:session-1",
+                "fleet": "mu",
+                "reason": "frustration",
+                "severity": "low",
+                "hits": 1,
+                "markers": ["again?"],
+                "ending": "signoff",
+                "why": "1 operator-frustration marker (again?)",
+            },
+            {
+                "session_ref": "cc:11aa22bb",
+                "fleet": "cc",
+                "reason": "frustration",
+                "severity": "med",
+                "hits": 4,
+                "markers": ["no.", "stop", "why are we"],
+                "ending": "abrupt",
+                "why": "4 operator-frustration markers (no., stop, why are we)",
+            },
+        ],
         "compaction": {
             "mu": {
                 "kept": 61,
