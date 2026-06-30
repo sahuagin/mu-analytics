@@ -380,6 +380,47 @@ def flagged_queue(con, limit=12):
     return out
 
 
+def frustration_signals(con, limit=400):
+    """Per-session OPERATOR-frustration signal, CROSS-FLEET, from scans.scan_frustration
+    over the `ev` view. Surfaces sessions where the operator's own language shows
+    frustration (markers like 'stop', "I didn't ask", 'you keep', 'again?') and
+    abrupt+frustrated endings. This is the signal that was already being computed and
+    then discarded into the null ML probe — here it becomes a first-class attention row.
+
+    Returns rows shaped for the behavioral attention queue:
+        [{session_ref, fleet, reason, severity, hits, markers, ending, why}]
+    sorted worst-first (high severity, then most markers)."""
+    import scans
+
+    hit_rows, _all_rows, _totals = scans.scan_frustration(con)
+    rows = []
+    for ref, _win, hits, _n_user, markers, _started, ending in hit_rows:
+        fleet = ref.split(":", 1)[0]
+        abrupt = "frustrated" in str(ending)
+        severity = "high" if (hits >= 5 or abrupt) else "med" if hits >= 2 else "low"
+        marker_list = list(markers or [])
+        why = f"{hits} operator-frustration marker{'' if hits == 1 else 's'}"
+        if marker_list:
+            why += f" ({', '.join(marker_list[:3])})"
+        if abrupt:
+            why += "; abrupt+frustrated exit"
+        rows.append(
+            {
+                "session_ref": ref,
+                "fleet": fleet,
+                "reason": "frustration",
+                "severity": severity,
+                "hits": int(hits),
+                "markers": marker_list[:4],
+                "ending": ending,
+                "why": why,
+            }
+        )
+    sev_rank = {"high": 0, "med": 1, "low": 2}
+    rows.sort(key=lambda r: (sev_rank.get(r["severity"], 9), -r["hits"]))
+    return rows[:limit]
+
+
 _DELEGATION_KINDS = (
     "worker_spawned",
     "worker_exited",
