@@ -1,22 +1,29 @@
 #!/usr/bin/env python3
-"""Run the behavior-judge on one (transcript, class) via ollama /api/chat.
+"""Run the behavior-judge on one (transcript, class).
 
-Uses the model AS-LOADED: NO `num_ctx` in options — passing num_ctx forces ollama
-to evict and reload the model. Stdlib only.
+Resolves the model through the operator's role system — `agent-role judge` gives a
+ranked (provider, model) ladder — and runs the resolved target through the SHARED
+dispatcher (`agent_dispatch`, sourced from agent-dispatch.sh: the one thing
+everything should use). It routes claude-vs-mu ToS-cleanly, holds the cooperative
+ollama lease, and stays hermetic; `agent-role` itself demotes off a busy ollama box,
+so a contended box routes you down to codex/opus. Nothing about host/model/sampling
+is hardcoded here: it lives in ~/.config/mu (agent_roles.toml, models.toml) and the
+shared dispatcher. A `--host`/`--model` escape hatch keeps a direct ollama call for a
+standalone/publishable checkout with no agent-role.
 
 System prompt = judge/behavior-judge-system-prompt.txt with {CLASS_RUBRIC} filled
-from judge/rubric.md for the given class. Forces JSON output (format=json) and does
-NOT override sampling (temperature 0 degenerates qwen3-family models — use the model's
-recommended sampling; make it reproducible with a fixed seed if needed).
+from judge/rubric.md for the given class, passed via --append-system-prompt.
 
-Usage: run_judge.py --transcript <rendered.txt> --cls <class-id> [--model M --host H]
-Prints the verdict JSON to stdout; timing/token counts to stderr.
+Usage: run_judge.py --transcript <rendered.txt> --cls <class-id> [--role R] [--host H --model M]
+Prints the verdict to stdout; the chosen provider/model + timing to stderr.
 """
 
 import argparse
 import json
 import os
+import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 
@@ -32,45 +39,141 @@ def class_rubric(cls):
     raise SystemExit(f"class '{cls}' not found in rubric.md")
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--transcript", required=True)
-    ap.add_argument("--cls", required=True)
-    ap.add_argument("--model", default="qwen3.6:35b-a3b-q8_0")
-    ap.add_argument("--host", default="localhost:11434")
-    args = ap.parse_args()
+ROLE_DEFAULT = "judge"
 
-    sys_t = open(os.path.join(JUDGE, "behavior-judge-system-prompt.txt")).read()
-    system = sys_t.replace("{CLASS_RUBRIC}", class_rubric(args.cls))
-    transcript = open(args.transcript, errors="ignore").read()
 
+def role_ladder(role):
+    """Ranked `(provider, model)` targets for ROLE, resolved from the operator's
+    config via `agent-role` — the alternative to hardcoding a model id. Returns []
+    if agent-role is absent (a publishable/standalone checkout), so the caller can
+    fall back to a direct call."""
+    try:
+        out = subprocess.run(["agent-role", role], capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    ladder = []
+    for line in out.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 2:
+            ladder.append((parts[0], parts[1]))
+    return ladder
+
+
+def _dispatch_lib():
+    """Path to the canonical dispatcher (mu/scripts/lib/agent-dispatch.sh), preferring
+    the ~/.local/bin symlink so this isn't coupled to the mu repo's location."""
+    for p in (
+        "~/.local/bin/agent-dispatch.sh",
+        "~/src/public_github/mu/scripts/lib/agent-dispatch.sh",
+    ):
+        full = os.path.expanduser(p)
+        if os.path.exists(full):
+            return full
+    return os.path.expanduser("~/.local/bin/agent-dispatch.sh")
+
+
+def dispatch(provider, model, sys_file, transcript_path, timeout):
+    """Run one resolved target through the SHARED dispatcher — `agent_dispatch`, sourced
+    from agent-dispatch.sh, the one thing everything should use. It routes claude-vs-mu
+    ToS-cleanly, holds the cooperative ollama lease, and stays hermetic; `agent-role`'s
+    demote-when-held already steers resolution off a busy box. The judge needs no tools
+    (TOOLS=''); the class rubric is the system prompt. Returns (verdict_text, ok)."""
+    script = '. "$AGENT_DISPATCH_LIB" && agent_dispatch "$1" "$2" "$3"'
+    env = {
+        **os.environ,
+        "AGENT_DISPATCH_LIB": _dispatch_lib(),
+        "SYSPROMPT": sys_file,
+        "TOOLS": "",  # pure read-transcript -> verdict; no read/grep/bash tools
+        "TIMEOUT": str(timeout),
+    }
+    r = subprocess.run(
+        ["sh", "-c", script, "sh", provider, model, transcript_path],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=timeout + 60,
+    )
+    text = (r.stdout or "").strip()
+    return text, bool(text)
+
+
+def direct_ollama(host, model, system, transcript_path, timeout):
+    """Standalone/publishable fallback: a direct ollama /api/chat call (the original
+    behaviour) for a checkout with no agent-role. Model AS-LOADED — no sampling or
+    num_ctx overrides (temperature 0 degenerates qwen3; changing num_ctx reloads)."""
+    transcript = open(transcript_path, errors="ignore").read()
     payload = {
-        "model": args.model,
+        "model": model,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": "Rendered transcript follows.\n\n" + transcript},
         ],
         "stream": False,
         "format": "json",
-        # Use the model AS-LOADED: do NOT override sampling here. The loaded model's
-        # baked params (for qwen3-family, e.g. temp ~1 / top_k 20 / top_p 0.95 /
-        # min_p 0) are used as-is; temperature 0 is a known footgun on qwen3, and
-        # changing num_ctx would force a reload. No options overrides.
     }
     req = urllib.request.Request(
-        "http://" + args.host + "/api/chat",
+        "http://" + host + "/api/chat",
         data=json.dumps(payload).encode(),
         headers={"Content-Type": "application/json"},
     )
-    t0 = time.time()
-    out = json.loads(urllib.request.urlopen(req, timeout=900).read())
-    dt = time.time() - t0
-    content = out.get("message", {}).get("content", "")
-    sys.stderr.write(
-        f"[{args.cls}] {dt:.0f}s  prompt_tokens={out.get('prompt_eval_count')} "
-        f"gen_tokens={out.get('eval_count')}\n"
+    out = json.loads(urllib.request.urlopen(req, timeout=timeout).read())
+    return out.get("message", {}).get("content", "")
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--transcript", required=True)
+    ap.add_argument("--cls", required=True)
+    ap.add_argument(
+        "--role", default=ROLE_DEFAULT, help="agent-role to resolve the model (default: judge)"
     )
-    print(content)
+    ap.add_argument("--timeout", type=int, default=900)
+    # Standalone escape hatch: an explicit --host forces a direct ollama call,
+    # bypassing role resolution. NOT used in the operator's deployment.
+    ap.add_argument("--host", default=None, help="direct ollama host:port, bypassing agent-role")
+    ap.add_argument("--model", default=None, help="direct ollama model (used with --host)")
+    args = ap.parse_args()
+
+    sys_t = open(os.path.join(JUDGE, "behavior-judge-system-prompt.txt")).read()
+    system = sys_t.replace("{CLASS_RUBRIC}", class_rubric(args.cls))
+
+    if args.host:  # direct/standalone mode
+        print(
+            direct_ollama(
+                args.host,
+                args.model or "qwen3.6:35b-a3b-q8_0",
+                system,
+                args.transcript,
+                args.timeout,
+            )
+        )
+        return
+
+    ladder = role_ladder(args.role)
+    if not ladder:
+        sys.exit(
+            f"judge: role '{args.role}' did not resolve (is agent-role on PATH?). "
+            "Pass --host/--model for a direct standalone call."
+        )
+
+    # The class system-prompt goes to a temp file for --append-system-prompt.
+    with tempfile.NamedTemporaryFile("w", suffix=".sysprompt", delete=False) as sf:
+        sf.write(system)
+        sys_file = sf.name
+    try:
+        for provider, model in ladder:
+            t0 = time.time()
+            text, ok = dispatch(provider, model, sys_file, args.transcript, args.timeout)
+            if ok:
+                sys.stderr.write(f"[{args.cls}] {provider}/{model} {time.time() - t0:.0f}s\n")
+                print(text)
+                return
+            sys.stderr.write(
+                f"[{args.cls}] {provider}/{model} unavailable (busy/error) -> next rank\n"
+            )
+        sys.exit(f"judge: no target in role '{args.role}' produced a verdict")
+    finally:
+        os.unlink(sys_file)
 
 
 if __name__ == "__main__":
