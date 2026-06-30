@@ -25,10 +25,12 @@ Usage:
 """
 
 import argparse
+import fcntl
 import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 import tomllib
 
@@ -44,6 +46,24 @@ CLASSES = ["false_success", "map_as_terrain", "scope_overreach", "relitigation",
 # Stop the run after this many consecutive zero-verdict sessions — the signature of a
 # down/unloaded ollama box. Better to bail than burn the whole delta against silence.
 DEAD_STREAK_ABORT = 3
+
+# Single-instance lock. A second concurrent run recomputes the same delta from the same
+# ledger snapshot and re-judges the same newest sessions — pure duplicate work (and lease
+# contention on the box). One judge at a time.
+LOCK_PATH = os.path.join(tempfile.gettempdir(), "judge-incremental.lock")
+
+
+def acquire_singleton_lock():
+    """Take the exclusive run lock, or return None if another run holds it. Returns the
+    open file handle on success — KEEP IT REFERENCED for the process's life; flock releases
+    automatically when the process exits (so a crashed run never wedges the next one)."""
+    fh = open(LOCK_PATH, "w")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        return None
+    return fh
 
 
 def _config_cc_roots():
@@ -96,8 +116,6 @@ def judge_session(path, classes, timeout):
     rr = subprocess.run([sys.executable, RENDER, path], capture_output=True, text=True, timeout=300)
     if not rr.stdout.strip():
         return [], False
-    import tempfile
-
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as tf:
         tf.write(rr.stdout)
         txt = tf.name
@@ -151,6 +169,17 @@ def main():
     ap.add_argument("--timeout", type=int, default=900, help="per-class judge timeout (s)")
     args = ap.parse_args()
     classes = [c.strip() for c in args.classes.split(",") if c.strip()]
+
+    # Real runs hold the singleton lock so a manual run and the cron run can't grind the
+    # same sessions in parallel. --dry-run reads only, so it doesn't need (or take) it.
+    lock = None
+    if not args.dry_run:
+        lock = acquire_singleton_lock()
+        if lock is None:
+            print(
+                "  another judge-incremental run is active — exiting (no concurrent duplicate work)."
+            )
+            return
 
     roots = [os.path.expanduser(r) for r in (args.cc_root or [])] or _config_cc_roots()
     current = enumerate_cc(roots)
