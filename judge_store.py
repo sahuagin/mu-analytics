@@ -47,6 +47,8 @@ CREATE TABLE IF NOT EXISTS verdicts(
     severity      TEXT,
     confidence    REAL,
     n_evidence    INTEGER,
+    model         TEXT,               -- which judge produced it (provider/model); only
+                                      -- qwen3.6 is rubric-validated, fallbacks are not
     src_mtime     REAL,               -- mtime this verdict was judged at
     judged_at     REAL,
     PRIMARY KEY (session_ref, behavior)
@@ -58,6 +60,10 @@ def _ensure():
     os.makedirs(os.path.dirname(JUDGE_DB), exist_ok=True)
     con = sqlite3.connect(JUDGE_DB)
     con.executescript(_DDL)
+    # Migrate an existing store (the model column post-dates the first ledger).
+    cols = {r[1] for r in con.execute("PRAGMA table_info(verdicts)")}
+    if "model" not in cols:
+        con.execute("ALTER TABLE verdicts ADD COLUMN model TEXT")
     con.commit()
     return con
 
@@ -77,8 +83,8 @@ def record(session_ref, fleet, src_mtime, verdicts, processed_at=None):
     """Persist one fully-judged session: upsert its ledger row + replace its verdicts.
 
     `verdicts` is the list of per-class result dicts run_judge_batch emits
-    (keys: behavior, occurred, severity, confidence, n_evidence). Call this ONLY when
-    the session judged cleanly across every class — a partially-failed session is left
+    (keys: behavior, occurred, severity, confidence, n_evidence, model). Call this ONLY
+    when the session judged cleanly across every class — a partially-failed session is left
     out of the ledger so it retries in full next run rather than being marked done."""
     now = processed_at if processed_at is not None else time.time()
     con = _ensure()
@@ -90,7 +96,7 @@ def record(session_ref, fleet, src_mtime, verdicts, processed_at=None):
     for v in verdicts:
         con.execute(
             "INSERT OR REPLACE INTO verdicts(session_ref, fleet, behavior, occurred, severity, "
-            "confidence, n_evidence, src_mtime, judged_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            "confidence, n_evidence, model, src_mtime, judged_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
             [
                 session_ref,
                 fleet,
@@ -99,6 +105,7 @@ def record(session_ref, fleet, src_mtime, verdicts, processed_at=None):
                 v.get("severity"),
                 v.get("confidence"),
                 v.get("n_evidence"),
+                v.get("model"),
                 src_mtime,
                 now,
             ],
@@ -114,7 +121,7 @@ def read_verdicts(only_occurred=False):
     con = _ensure()
     sql = (
         "SELECT session_ref, fleet, behavior, occurred, severity, confidence, n_evidence, "
-        "src_mtime, judged_at FROM verdicts"
+        "model, src_mtime, judged_at FROM verdicts"
     )
     if only_occurred:
         sql += " WHERE occurred = 1"
@@ -126,6 +133,7 @@ def read_verdicts(only_occurred=False):
         "severity",
         "confidence",
         "n_evidence",
+        "model",
         "src_mtime",
         "judged_at",
     ]
@@ -142,7 +150,13 @@ if __name__ == "__main__":
     by_fleet = con.execute(
         "SELECT fleet, count(*) FROM processed GROUP BY fleet ORDER BY fleet"
     ).fetchall()
+    by_model = con.execute(
+        "SELECT coalesce(model, '<unstamped>'), count(*) FROM verdicts GROUP BY model ORDER BY count(*) DESC"
+    ).fetchall()
     con.close()
     print(f"judge store: {JUDGE_DB}")
     print(f"  processed sessions: {n_proc}  ({'  '.join(f'{f}={n}' for f, n in by_fleet) or '-'})")
     print(f"  verdict rows: {n_verd}   occurred=1: {n_fired}")
+    print("  verdicts by judging model (only qwen3.6 is rubric-validated):")
+    for m, n in by_model:
+        print(f"    {m:32} {n}")

@@ -143,6 +143,7 @@ def judge_session(path, classes, timeout):
                         "severity": v.get("severity"),
                         "confidence": v.get("confidence"),
                         "n_evidence": len(v.get("evidence", [])),
+                        "model": v.get("judge_model"),
                     }
                 )
             except (json.JSONDecodeError, ValueError):

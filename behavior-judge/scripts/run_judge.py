@@ -180,6 +180,10 @@ def main():
             text, ok = dispatch(provider, model, sys_file, args.transcript, args.timeout)
             verdict = coerce_json(text) if ok else None
             if verdict is not None:
+                # Stamp WHICH target produced this verdict — only the rank-0 ollama model is
+                # rubric-validated; a deranked/busy box routes to fallbacks whose verdicts the
+                # consumer must be able to tell apart. Survives in the verdict's own JSON.
+                verdict["judge_model"] = f"{provider}/{model}"
                 sys.stderr.write(f"[{args.cls}] {provider}/{model} {time.time() - t0:.0f}s\n")
                 print(json.dumps(verdict))  # clean JSON to stdout — the parseable contract
                 return
