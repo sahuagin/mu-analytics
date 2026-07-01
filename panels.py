@@ -480,11 +480,9 @@ def judge_by_session():
     picture for the Sessions drill-down (firing AND non-firing classes), keyed by the
     canonical session_ref so the page looks it up by s.ref. The attention queue
     (judge_verdicts) shows only what FIRED; this is the 'click through for everything'
-    surface. Each entry: behavior, occurred, severity, confidence, n_evidence, model.
-
-    NOTE: the judge's own summary + evidence quotes are not here — judge_session discards
-    them at ingest (keeps only n_evidence). Surfacing that reasoning needs a store change
-    + a re-judge; this shows everything currently persisted."""
+    surface. Each entry: behavior, occurred, severity, confidence, n_evidence, model, and
+    the judge's own summary + evidence quotes (once captured — sessions judged before the
+    capture change have summary=None/evidence=[] until they're re-judged)."""
     import judge_store
 
     out = {}
@@ -497,6 +495,8 @@ def judge_by_session():
                 "confidence": v.get("confidence"),
                 "n_evidence": v.get("n_evidence"),
                 "model": v.get("model"),
+                "summary": v.get("summary"),
+                "evidence": v.get("evidence") or [],
             }
         )
     # Firing classes first, then alphabetical — a stable order for the drill-down table.
