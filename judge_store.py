@@ -24,6 +24,7 @@ Two tables:
 Run:  ./run judge_store.py            # print a summary of what's been judged
 """
 
+import json
 import os
 import sqlite3
 import time
@@ -49,6 +50,8 @@ CREATE TABLE IF NOT EXISTS verdicts(
     n_evidence    INTEGER,
     model         TEXT,               -- which judge produced it (provider/model); only
                                       -- qwen3.6 is rubric-validated, fallbacks are not
+    summary       TEXT,               -- the judge's one-line rationale for this verdict
+    evidence      TEXT,               -- JSON [{turn, quote, why}, ...] — the cited turns
     src_mtime     REAL,               -- mtime this verdict was judged at
     judged_at     REAL,
     PRIMARY KEY (session_ref, behavior)
@@ -62,8 +65,9 @@ def _ensure():
     con.executescript(_DDL)
     # Migrate an existing store (the model column post-dates the first ledger).
     cols = {r[1] for r in con.execute("PRAGMA table_info(verdicts)")}
-    if "model" not in cols:
-        con.execute("ALTER TABLE verdicts ADD COLUMN model TEXT")
+    for col in ("model", "summary", "evidence"):
+        if col not in cols:
+            con.execute(f"ALTER TABLE verdicts ADD COLUMN {col} TEXT")
     con.commit()
     return con
 
@@ -94,9 +98,11 @@ def record(session_ref, fleet, src_mtime, verdicts, processed_at=None):
         [session_ref, fleet, src_mtime, now, len(verdicts)],
     )
     for v in verdicts:
+        evidence = v.get("evidence")
         con.execute(
             "INSERT OR REPLACE INTO verdicts(session_ref, fleet, behavior, occurred, severity, "
-            "confidence, n_evidence, model, src_mtime, judged_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "confidence, n_evidence, model, summary, evidence, src_mtime, judged_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             [
                 session_ref,
                 fleet,
@@ -106,6 +112,8 @@ def record(session_ref, fleet, src_mtime, verdicts, processed_at=None):
                 v.get("confidence"),
                 v.get("n_evidence"),
                 v.get("model"),
+                v.get("summary"),
+                json.dumps(evidence) if evidence is not None else None,
                 src_mtime,
                 now,
             ],
@@ -121,7 +129,7 @@ def read_verdicts(only_occurred=False):
     con = _ensure()
     sql = (
         "SELECT session_ref, fleet, behavior, occurred, severity, confidence, n_evidence, "
-        "model, src_mtime, judged_at FROM verdicts"
+        "model, summary, evidence, src_mtime, judged_at FROM verdicts"
     )
     if only_occurred:
         sql += " WHERE occurred = 1"
@@ -134,11 +142,19 @@ def read_verdicts(only_occurred=False):
         "confidence",
         "n_evidence",
         "model",
+        "summary",
+        "evidence",
         "src_mtime",
         "judged_at",
     ]
     out = [dict(zip(cols, row, strict=True)) for row in con.execute(sql)]
     con.close()
+    # evidence is stored as a JSON string; hand callers the parsed list (or []).
+    for d in out:
+        try:
+            d["evidence"] = json.loads(d["evidence"]) if d["evidence"] else []
+        except (json.JSONDecodeError, TypeError):
+            d["evidence"] = []
     return out
 
 
