@@ -146,6 +146,13 @@ def main():
     # bypassing role resolution. NOT used in the operator's deployment.
     ap.add_argument("--host", default=None, help="direct ollama host:port, bypassing agent-role")
     ap.add_argument("--model", default=None, help="direct ollama model (used with --host)")
+    ap.add_argument(
+        "--skip-ollama",
+        action="store_true",
+        help="drop ollama targets from the ladder — route to the concurrent subscription "
+        "APIs (gpt-5.5/opus) so parallel workers actually overlap. NOT the calibrated qwen; "
+        "for the historical backfill. The runner stamps which model judged each verdict.",
+    )
     args = ap.parse_args()
 
     sys_t = open(os.path.join(JUDGE, "behavior-judge-system-prompt.txt")).read()
@@ -164,10 +171,16 @@ def main():
         return
 
     ladder = role_ladder(args.role)
+    if args.skip_ollama:
+        ladder = [(p, m) for p, m in ladder if not p.startswith("ollama")]
     if not ladder:
+        why = (
+            "has no non-ollama targets (--skip-ollama removed them all)"
+            if args.skip_ollama
+            else "did not resolve (is agent-role on PATH?)"
+        )
         sys.exit(
-            f"judge: role '{args.role}' did not resolve (is agent-role on PATH?). "
-            "Pass --host/--model for a direct standalone call."
+            f"judge: role '{args.role}' {why}. Pass --host/--model for a direct standalone call."
         )
 
     # The class system-prompt goes to a temp file for --append-system-prompt.
