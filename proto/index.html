@@ -696,7 +696,7 @@ function renderCost(v){
 
 /* ---------- BEHAVIORAL ---------- */
 // One glyph per detector source, reused by the attention queue.
-const SOURCE_GLYPH = { runtime: '⚑', audit: '⚠', ml: 'Δ', mark: '★', frustration: '‼' };
+const SOURCE_GLYPH = { runtime: '⚑', audit: '⚠', ml: 'Δ', mark: '★', frustration: '‼', judge: '⚖' };
 const sourceGlyph = source => SOURCE_GLYPH[source] || '•';
 
 // Group per-signal attention rows into one entry per session and score
@@ -728,7 +728,7 @@ function renderBehavioral(v){
   v.innerHTML = pageHead('Behavioral','Review workbench for sessions that deserve attention. This page combines machine, audit, runtime, and manual signals; the classifier-artifact outcome/hallucination summaries are intentionally not shown here.','auto')+`
     <div class="caveat" style="margin-bottom:16px"><div class="ic">!</div><div class="body"><b>Review queue, not verdicts.</b> Rows below are candidate attention signals: degraded stops, tool-error loops, self-flags, deterministic audit findings, telemetry/sentiment residuals, and local low ratings. Open the linked session before treating a row as ground truth.</div></div>
     <div class="grid">
-      <div class="panel col-12"><div class="ph" style="align-items:center;gap:12px;flex-wrap:wrap"><div><div class="ttl">Attention queue</div><div class="desc" id="bq-count">sessions and findings that need human review</div></div><div class="tbl-tools"><select id="bq-source" class="fin"><option value="">all signals</option><option value="runtime">runtime</option><option value="audit">audit</option><option value="ml">ml residual</option><option value="mark">manual mark</option><option value="frustration">frustration</option></select><select id="bq-sev" class="fin"><option value="">all severity</option><option value="high">high</option><option value="med">medium</option><option value="low">low</option></select><div class="toggle" id="bq-corr"><span class="sw2"></span> corroborated (2+)</div></div></div><div class="queue" id="b-workbench"></div></div>
+      <div class="panel col-12"><div class="ph" style="align-items:center;gap:12px;flex-wrap:wrap"><div><div class="ttl">Attention queue</div><div class="desc" id="bq-count">sessions and findings that need human review</div></div><div class="tbl-tools"><select id="bq-source" class="fin"><option value="">all signals</option><option value="runtime">runtime</option><option value="audit">audit</option><option value="ml">ml residual</option><option value="mark">manual mark</option><option value="frustration">frustration</option><option value="judge">behavior-judge</option></select><select id="bq-sev" class="fin"><option value="">all severity</option><option value="high">high</option><option value="med">medium</option><option value="low">low</option></select><div class="toggle" id="bq-corr"><span class="sw2"></span> corroborated (2+)</div></div></div><div class="queue" id="b-workbench"></div></div>
       <div class="panel col-7"><div class="ph"><div><div class="ttl">Degradation over time · with your ratings</div><div class="desc">computed stop-reason degradation with sparse manual session-ratings dropped on as points</div></div><div class="hint" id="b-mark-summary">degradation % · ★ rating</div></div><div class="chart" id="b-trend" style="height:240px"></div></div>
       <div class="panel col-5"><div class="ph"><div><div class="ttl">Signal mix</div><div class="desc">why rows entered the queue</div></div><div class="hint" id="b-signal-h">—</div></div><div class="chart" id="b-signals" style="height:240px"></div></div>
       <div class="panel col-7"><div class="ph"><div><div class="ttl">Telemetry → operator-sentiment probe</div><div class="desc">residual tails where telemetry and operator sentiment disagree</div></div><div class="hint" id="b-probe-skill"></div></div><div id="b-probe" style="margin-top:8px"></div></div>
@@ -737,7 +737,7 @@ function renderBehavioral(v){
   degTrend('b-trend');
   const MS=(VIEW.meta&&VIEW.meta.mark_summary)||{marks:(VIEW.marks||[]).length,sessions:0,days:0};
   const msh=document.getElementById('b-mark-summary'); if(msh)msh.textContent=`${MS.marks} marks · ${MS.sessions} sessions · ${MS.days} days`;
-  const P=VIEW.degradation_probe||{}, A=VIEW.audit_findings||[], F=VIEW.flagged_queue||[], FR=VIEW.frustration_signals||[];
+  const P=VIEW.degradation_probe||{}, A=VIEW.audit_findings||[], F=VIEW.flagged_queue||[], FR=VIEW.frustration_signals||[], JV=VIEW.judge_verdicts||[];
   const sevRank={high:0,med:1,low:2};
   const normSev=x=>{x=String(x||'').toLowerCase(); return x==='critical'||x==='error'||x==='deg'||x==='err'?'high':(x==='warn'||x==='warning'||x==='medium'?'med':'low');};
   // Every detector now exposes the same canonical session_ref (cc:<uuid> /
@@ -751,6 +751,7 @@ function renderBehavioral(v){
   F.forEach(x => rows.push(row('runtime', x.reason, x.session_ref, `${x.id} · ${x.model || '—'}`, x.why || '', x.reason === 'deg' ? 'degraded stop' : x.reason === 'err' ? 'tool/error loop' : x.reason === 'callout' ? 'self-flag' : 'runtime', x.fleet)));
   A.forEach(f => rows.push(row('audit', f.severity, f.session_ref, `${(f.session_ref || '').slice(0, 26)} · ${f.invariant || 'audit'}`, f.detail || '', f.severity || 'finding')));
   FR.forEach(x => rows.push(row('frustration', x.severity, x.session_ref, `${(x.session_ref || '').slice(0, 26)} · ${x.hits}× frustration`, x.why || '', x.ending === 'ABRUPT+frustrated' ? 'abrupt+frustrated exit' : 'operator frustration', x.fleet)));
+  JV.forEach(x => rows.push(row('judge', x.severity, x.session_ref, `${(x.session_ref || '').slice(0, 26)} · judge: ${x.n} class${x.n === 1 ? '' : 'es'}`, x.why || '', (x.behaviors || []).join(', ') || 'behavior-judge', x.fleet)));
   (P.unnoticed || []).forEach(w => rows.push(row('ml', 'med', w.session_ref, `${(w.session_ref || '').slice(0, 26)} · telemetry rosy`, `observed ${w.obs}; predicted ${w.pred}; residual ${w.resid}`, 'candidate unnoticed-degraded')));
   (P.task_frust || []).forEach(w => rows.push(row('ml', 'low', w.session_ref, `${(w.session_ref || '').slice(0, 26)} · operator warmer`, `observed ${w.obs}; predicted ${w.pred}; residual ${w.resid}`, 'telemetry pessimistic')));
   let marks = []; try { marks = JSON.parse(localStorage.getItem('mu-marks') || '[]'); } catch(e) { marks = []; }

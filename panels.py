@@ -421,6 +421,54 @@ def frustration_signals(con, limit=400):
     return rows[:limit]
 
 
+def judge_verdicts(limit=400):
+    """Per-session BEHAVIOR-JUDGE signal, from the semantic judge's own store
+    (judge_store / data/judge.sqlite) — NOT the `ev` view. Surfaces sessions where the
+    separate-LLM judge ruled that one of the 5 failure classes occurred (false_success /
+    map_as_terrain / scope_overreach / relitigation / dismissiveness). This is the
+    'built-but-stranded' detector the whole thread was after: the judge writes verdicts
+    to its store; here they become first-class attention rows that fuse with the
+    runtime/frustration/audit signals on the same canonical session_ref.
+
+    Only FIRING verdicts (occurred=1) enter the queue; a session with several fired
+    classes collapses to ONE row (worst severity, most classes first), so corroboration
+    counts it as one judge source rather than five.
+
+    Returns rows shaped for the behavioral attention queue:
+        [{session_ref, fleet, reason, severity, behaviors, n, why}]."""
+    import judge_store
+
+    sev_rank = {"high": 0, "med": 1, "medium": 1, "low": 2}
+    by_session = {}
+    for v in judge_store.read_verdicts(only_occurred=True):
+        by_session.setdefault(v["session_ref"], []).append(v)
+    rows = []
+    for ref, verdicts in by_session.items():
+        fleet = (ref or "").split(":", 1)[0]
+        behaviors = sorted(v["behavior"] for v in verdicts)
+        worst = min(
+            (str(v.get("severity") or "low").lower() for v in verdicts),
+            key=lambda s: sev_rank.get(s, 9),
+        )
+        severity = (
+            "med" if worst == "medium" else worst if worst in ("high", "med", "low") else "med"
+        )
+        plural = "" if len(behaviors) == 1 else "es"
+        rows.append(
+            {
+                "session_ref": ref,
+                "fleet": fleet,
+                "reason": "judge",
+                "severity": severity,
+                "behaviors": behaviors,
+                "n": len(behaviors),
+                "why": f"judge flagged {len(behaviors)} failure class{plural}: {', '.join(behaviors)}",
+            }
+        )
+    rows.sort(key=lambda r: (sev_rank.get(r["severity"], 9), -r["n"]))
+    return rows[:limit]
+
+
 _DELEGATION_KINDS = (
     "worker_spawned",
     "worker_exited",
