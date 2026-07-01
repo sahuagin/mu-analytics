@@ -144,6 +144,10 @@ def judge_session(path, classes, timeout):
                         "confidence": v.get("confidence"),
                         "n_evidence": len(v.get("evidence", [])),
                         "model": v.get("judge_model"),
+                        # Keep the judge's actual reasoning — regenerating it is a full
+                        # ~6-min re-judge, so never throw it away at ingest.
+                        "summary": v.get("summary"),
+                        "evidence": v.get("evidence"),  # [{turn, quote, why}, ...]
                     }
                 )
             except (json.JSONDecodeError, ValueError):

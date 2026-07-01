@@ -739,7 +739,7 @@ function renderBehavioral(v){
   const msh=document.getElementById('b-mark-summary'); if(msh)msh.textContent=`${MS.marks} marks · ${MS.sessions} sessions · ${MS.days} days`;
   const P=VIEW.degradation_probe||{}, A=VIEW.audit_findings||[], F=VIEW.flagged_queue||[], FR=VIEW.frustration_signals||[], JV=VIEW.judge_verdicts||[];
   const sevRank={high:0,med:1,low:2};
-  const normSev=x=>{x=String(x||'').toLowerCase(); return x==='critical'||x==='error'||x==='deg'||x==='err'?'high':(x==='warn'||x==='warning'||x==='medium'?'med':'low');};
+  const normSev=x=>{x=String(x||'').toLowerCase(); return x==='critical'||x==='error'||x==='deg'||x==='err'?'high':(x==='warn'||x==='warning'||x==='medium'||x==='moderate'?'med':'low');};
   // Every detector now exposes the same canonical session_ref (cc:<uuid> /
   // mu:daemon:sid), so signals for one session share a join key with no per-source
   // remapping. row.ref holds that key; the Sessions page resolves it to a display
@@ -1021,12 +1021,21 @@ function sessionTable(initial={}){
       +`<td class="dim">${esc(v.confidence||'—')}</td>`
       +`<td class="r dim">${v.n_evidence!=null?v.n_evidence:'—'}</td>`
       +`<td class="mono dim" style="font-size:10px" title="${esc(v.model||'')}">${esc(shortModel(v.model))}</td></tr>`;
+    // The judge's own words: per-class rationale + the transcript turns it cited.
+    const reason = jv.filter(v => v.summary || (v.evidence || []).length).map(v =>
+      `<div style="margin-top:9px">`
+      + `<span class="mono" style="font-size:11px;color:${v.occurred ? 'var(--accent)' : 'var(--fg-mute)'}">${esc(v.behavior)}</span>`
+      + (v.summary ? ` — <span style="font-size:12px">${esc(v.summary)}</span>` : '')
+      + (v.evidence || []).map(e =>
+          `<div class="dim" style="margin:3px 0 0 14px;font-size:11px">turn ${esc(String(e.turn != null ? e.turn : '?'))}: “${esc(String(e.quote || '').slice(0, 220))}”${e.why ? ` — ${esc(e.why)}` : ''}</div>`).join('')
+      + `</div>`).join('');
     return `<div style="grid-column:1/-1;border-top:1px solid var(--border);margin-top:4px;padding-top:14px">`
       +`<h4>Behavioral · behavior-judge</h4>`
       +`<table class="sess" style="width:100%"><thead><tr class="dim" style="font-size:10px;text-transform:uppercase">`
       +`<td>class</td><td>verdict</td><td>severity</td><td>confidence</td><td class="r">evidence</td><td>model</td></tr></thead>`
       +`<tbody>${jv.map(trH).join('')}</tbody></table>`
-      +`<div class="hint">only qwen3.6 is rubric-validated; other models are fallbacks. The judge's own summary + evidence quotes aren't stored yet — a re-judge after that capture change will surface them here.</div></div>`;
+      +(reason ? `<div style="margin-top:12px"><div class="dim" style="font-size:10px;text-transform:uppercase;margin-bottom:2px">judge reasoning</div>${reason}</div>` : '')
+      +`<div class="hint">only qwen3.6 is rubric-validated; other models are fallbacks. Sessions judged before the reasoning-capture change show no summary/quotes until re-judged.</div></div>`;
   }
   function drill(s){ const co=compFor(s),tot=Object.values(co).reduce((a,b)=>a+b,0);
     const parts=[{v:co.cache_read,c:cssVar('--accent'),l:'cache read'},{v:co.output,c:cssVar('--blue'),l:'output'},{v:co.cache_write,c:cssVar('--amber'),l:'cache write'},{v:co.input,c:cssVar('--slate'),l:'input'}];
