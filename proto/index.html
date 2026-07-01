@@ -739,7 +739,7 @@ function renderBehavioral(v){
   const msh=document.getElementById('b-mark-summary'); if(msh)msh.textContent=`${MS.marks} marks · ${MS.sessions} sessions · ${MS.days} days`;
   const P=VIEW.degradation_probe||{}, A=VIEW.audit_findings||[], F=VIEW.flagged_queue||[], FR=VIEW.frustration_signals||[], JV=VIEW.judge_verdicts||[];
   const sevRank={high:0,med:1,low:2};
-  const normSev=x=>{x=String(x||'').toLowerCase(); return x==='critical'||x==='error'||x==='deg'||x==='err'?'high':(x==='warn'||x==='warning'||x==='medium'?'med':'low');};
+  const normSev=x=>{x=String(x||'').toLowerCase(); return x==='critical'||x==='error'||x==='deg'||x==='err'?'high':(x==='warn'||x==='warning'||x==='medium'||x==='moderate'?'med':'low');};
   // Every detector now exposes the same canonical session_ref (cc:<uuid> /
   // mu:daemon:sid), so signals for one session share a join key with no per-source
   // remapping. row.ref holds that key; the Sessions page resolves it to a display
