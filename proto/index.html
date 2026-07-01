@@ -751,7 +751,7 @@ function renderBehavioral(v){
   F.forEach(x => rows.push(row('runtime', x.reason, x.session_ref, `${x.id} · ${x.model || '—'}`, x.why || '', x.reason === 'deg' ? 'degraded stop' : x.reason === 'err' ? 'tool/error loop' : x.reason === 'callout' ? 'self-flag' : 'runtime', x.fleet)));
   A.forEach(f => rows.push(row('audit', f.severity, f.session_ref, `${(f.session_ref || '').slice(0, 26)} · ${f.invariant || 'audit'}`, f.detail || '', f.severity || 'finding')));
   FR.forEach(x => rows.push(row('frustration', x.severity, x.session_ref, `${(x.session_ref || '').slice(0, 26)} · ${x.hits}× frustration`, x.why || '', x.ending === 'ABRUPT+frustrated' ? 'abrupt+frustrated exit' : 'operator frustration', x.fleet)));
-  JV.forEach(x => rows.push(row('judge', x.severity, x.session_ref, `${(x.session_ref || '').slice(0, 26)} · judge: ${x.n} class${x.n === 1 ? '' : 'es'}`, x.why || '', (x.behaviors || []).join(', ') || 'behavior-judge', x.fleet)));
+  JV.forEach(x => { const mt = (x.models || []).map(m => m.split('/').pop().split(':')[0]).join(','); rows.push(row('judge', x.severity, x.session_ref, `${(x.session_ref || '').slice(0, 26)} · judge${mt ? '[' + mt + ']' : ''}: ${x.n} class${x.n === 1 ? '' : 'es'}`, x.why || '', (x.behaviors || []).join(', ') || 'behavior-judge', x.fleet)); });
   (P.unnoticed || []).forEach(w => rows.push(row('ml', 'med', w.session_ref, `${(w.session_ref || '').slice(0, 26)} · telemetry rosy`, `observed ${w.obs}; predicted ${w.pred}; residual ${w.resid}`, 'candidate unnoticed-degraded')));
   (P.task_frust || []).forEach(w => rows.push(row('ml', 'low', w.session_ref, `${(w.session_ref || '').slice(0, 26)} · operator warmer`, `observed ${w.obs}; predicted ${w.pred}; residual ${w.resid}`, 'telemetry pessimistic')));
   let marks = []; try { marks = JSON.parse(localStorage.getItem('mu-marks') || '[]'); } catch(e) { marks = []; }
@@ -1008,6 +1008,26 @@ function sessionTable(initial={}){
       .then(turns=>{ TXCACHE[slug]=turns; fillConvo(el,turns); })
       .catch(()=>{ el.innerHTML=`<div class="convo-empty">No transcript captured for this session.</div>`; });
   }
+  // Full behavioral detail for one session — every class the judge ruled on (firing and
+  // clear), with severity / confidence / evidence-count / model. Returns '' (no section)
+  // when the judge hasn't scored this session. Rendered full-width under the drill.
+  function judgeSection(s){
+    const jv=(VIEW.judge_by_session||{})[s.ref]||[];
+    if(!jv.length) return '';
+    const shortModel=m=>(m||'—').split('/').pop().split(':')[0];
+    const trH=v=>`<tr class="main"><td class="mono" style="font-size:11px">${esc(v.behavior)}</td>`
+      +`<td style="color:${v.occurred?'var(--accent)':'var(--fg-mute)'};font-weight:${v.occurred?600:400}">${v.occurred?'occurred':'clear'}</td>`
+      +`<td>${v.occurred?esc(v.severity||'—'):'—'}</td>`
+      +`<td class="dim">${esc(v.confidence||'—')}</td>`
+      +`<td class="r dim">${v.n_evidence!=null?v.n_evidence:'—'}</td>`
+      +`<td class="mono dim" style="font-size:10px" title="${esc(v.model||'')}">${esc(shortModel(v.model))}</td></tr>`;
+    return `<div style="grid-column:1/-1;border-top:1px solid var(--border);margin-top:4px;padding-top:14px">`
+      +`<h4>Behavioral · behavior-judge</h4>`
+      +`<table class="sess" style="width:100%"><thead><tr class="dim" style="font-size:10px;text-transform:uppercase">`
+      +`<td>class</td><td>verdict</td><td>severity</td><td>confidence</td><td class="r">evidence</td><td>model</td></tr></thead>`
+      +`<tbody>${jv.map(trH).join('')}</tbody></table>`
+      +`<div class="hint">only qwen3.6 is rubric-validated; other models are fallbacks. The judge's own summary + evidence quotes aren't stored yet — a re-judge after that capture change will surface them here.</div></div>`;
+  }
   function drill(s){ const co=compFor(s),tot=Object.values(co).reduce((a,b)=>a+b,0);
     const parts=[{v:co.cache_read,c:cssVar('--accent'),l:'cache read'},{v:co.output,c:cssVar('--blue'),l:'output'},{v:co.cache_write,c:cssVar('--amber'),l:'cache write'},{v:co.input,c:cssVar('--slate'),l:'input'}];
     return `<tr class="detail"><td colspan="7"><div class="drill">
@@ -1029,7 +1049,7 @@ function sessionTable(initial={}){
           <button class="save">✓ save mark</button>
           <div class="hint">marks are sparse ground-truth — they become the ★ points on the Behavioral &amp; Overview trends.</div>
         </div>
-      </div></div></td></tr>`;
+      </div>${judgeSection(s)}</div></td></tr>`;
   }
   const norm=q=>String(q||'').toLowerCase();
   const searchable=s=>[s.id,s.ref,s.model,s.kind,s.outcome,s.fleet].concat(s.aliases||[]).join(' ');

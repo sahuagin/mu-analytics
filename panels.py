@@ -445,15 +445,20 @@ def judge_verdicts(limit=400):
     rows = []
     for ref, verdicts in by_session.items():
         fleet = (ref or "").split(":", 1)[0]
-        behaviors = sorted(v["behavior"] for v in verdicts)
-        worst = min(
-            (str(v.get("severity") or "low").lower() for v in verdicts),
-            key=lambda s: sev_rank.get(s, 9),
+        # Worst-severity class first, so the truncated queue line leads with the worst.
+        verdicts = sorted(
+            verdicts, key=lambda v: sev_rank.get(str(v.get("severity") or "low").lower(), 9)
         )
+        behaviors = [v["behavior"] for v in verdicts]
+        worst = str(verdicts[0].get("severity") or "low").lower()
         severity = (
             "med" if worst == "medium" else worst if worst in ("high", "med", "low") else "med"
         )
-        plural = "" if len(behaviors) == 1 else "es"
+        models = sorted({v.get("model") for v in verdicts if v.get("model")})
+        # Per-class severity inline, so the queue row itself carries more than a count.
+        detail = ", ".join(
+            f"{v['behavior']} ({str(v.get('severity') or '?').lower()})" for v in verdicts
+        )
         rows.append(
             {
                 "session_ref": ref,
@@ -462,11 +467,42 @@ def judge_verdicts(limit=400):
                 "severity": severity,
                 "behaviors": behaviors,
                 "n": len(behaviors),
-                "why": f"judge flagged {len(behaviors)} failure class{plural}: {', '.join(behaviors)}",
+                "models": models,
+                "why": f"judge flagged {len(behaviors)}: {detail}",
             }
         )
     rows.sort(key=lambda r: (sev_rank.get(r["severity"], 9), -r["n"]))
     return rows[:limit]
+
+
+def judge_by_session():
+    """{session_ref: [every class the judge ruled on]} — the FULL per-session behavioral
+    picture for the Sessions drill-down (firing AND non-firing classes), keyed by the
+    canonical session_ref so the page looks it up by s.ref. The attention queue
+    (judge_verdicts) shows only what FIRED; this is the 'click through for everything'
+    surface. Each entry: behavior, occurred, severity, confidence, n_evidence, model.
+
+    NOTE: the judge's own summary + evidence quotes are not here — judge_session discards
+    them at ingest (keeps only n_evidence). Surfacing that reasoning needs a store change
+    + a re-judge; this shows everything currently persisted."""
+    import judge_store
+
+    out = {}
+    for v in judge_store.read_verdicts(only_occurred=False):
+        out.setdefault(v["session_ref"], []).append(
+            {
+                "behavior": v["behavior"],
+                "occurred": v.get("occurred"),
+                "severity": v.get("severity"),
+                "confidence": v.get("confidence"),
+                "n_evidence": v.get("n_evidence"),
+                "model": v.get("model"),
+            }
+        )
+    # Firing classes first, then alphabetical — a stable order for the drill-down table.
+    for verdicts in out.values():
+        verdicts.sort(key=lambda x: (0 if x["occurred"] else 1, x["behavior"]))
+    return out
 
 
 _DELEGATION_KINDS = (
