@@ -438,7 +438,10 @@ def judge_verdicts(limit=400):
         [{session_ref, fleet, reason, severity, behaviors, n, why}]."""
     import judge_store
 
-    sev_rank = {"high": 0, "med": 1, "medium": 1, "low": 2}
+    # The judge emits severity low|moderate|high (see behavior-judge-system-prompt.txt) —
+    # 'moderate' is the middle value, NOT 'medium'/'med'. Rank all three spellings so
+    # moderate verdicts (~1 in 5) stop collapsing to 'low'.
+    sev_rank = {"high": 0, "med": 1, "medium": 1, "moderate": 1, "low": 2}
     by_session = {}
     for v in judge_store.read_verdicts(only_occurred=True):
         by_session.setdefault(v["session_ref"], []).append(v)
