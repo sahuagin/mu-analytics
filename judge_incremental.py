@@ -18,19 +18,24 @@ cc only for now (the focus fleet). mu sessions resolve differently (daemon:sessi
 and mu telemetry still has the session-collapse issue; add it once that's settled.
 
 Usage:
-  ./run judge_incremental.py [--dry-run] [--limit N] [--cc-root DIR] [--classes a,b]
+  ./run judge_incremental.py [--dry-run] [--limit N] [--workers N] [--cc-root DIR]
   --dry-run   show the delta (what WOULD be judged) and exit, touching no model
   --limit N   judge at most N sessions this run (the rest wait for tomorrow)
+  --workers N  parallel sessions sharing one queue (default 1 = serial/calibrated). >1
+               only speeds up on the concurrent subscription APIs; the ollama lease
+               serializes the local box. Use for the historical backfill.
   --cc-root   override the transcript root (default: config paths.cc_log_roots)
 """
 
 import argparse
+import concurrent.futures
 import fcntl
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import tomllib
 
@@ -109,10 +114,11 @@ def select_delta(current, ledger):
     return delta
 
 
-def judge_session(path, classes, timeout):
+def judge_session(path, classes, timeout, skip_ollama=False):
     """Render one transcript and judge it across every class. Returns (verdicts, ok):
     verdicts is the list of per-class result dicts; ok is True only if EVERY class
-    returned a verdict (a partial result is not recorded, so it retries next run)."""
+    returned a verdict (a partial result is not recorded, so it retries next run).
+    skip_ollama drops the local box from run_judge's ladder (parallel-backfill routing)."""
     rr = subprocess.run([sys.executable, RENDER, path], capture_output=True, text=True, timeout=300)
     if not rr.stdout.strip():
         return [], False
@@ -123,13 +129,11 @@ def judge_session(path, classes, timeout):
         verdicts = []
         ok = True
         for cls in classes:
+            cmd = [sys.executable, JUDGE, "--transcript", txt, "--cls", cls]
+            if skip_ollama:
+                cmd.append("--skip-ollama")
             try:
-                jr = subprocess.run(
-                    [sys.executable, JUDGE, "--transcript", txt, "--cls", cls],
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout,
-                )
+                jr = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
             except subprocess.TimeoutExpired:
                 sys.stderr.write(f"    {cls}: FAILED — timed out after {timeout}s\n")
                 ok = False
@@ -163,12 +167,63 @@ def judge_session(path, classes, timeout):
         os.unlink(txt)
 
 
+def _judge_one(ref, current, classes, timeout, skip_ollama, lock, state):
+    """Judge one session for the worker pool. The LLM work runs OUTSIDE the lock (so N
+    workers judge different sessions in parallel); the store write + shared counters run
+    UNDER the lock (so the sqlite store and the abort breaker never race). `state` is a
+    shared dict: started/judged/skipped/dead counters, n, and an `abort` Event."""
+    if state["abort"].is_set():
+        return
+    with lock:
+        state["started"] += 1
+        idx = state["started"]
+    sys.stderr.write(f"[{idx}/{state['n']}] {ref}\n")
+    sys.stderr.flush()
+    path, mtime = current[ref]
+    verdicts, ok = judge_session(path, classes, timeout, skip_ollama)
+    with lock:
+        if ok and verdicts:
+            judge_store.record(ref, "cc", mtime, verdicts)
+            state["judged"] += 1
+            state["dead"] = 0
+            fired = [v["behavior"] for v in verdicts if v.get("occurred")]
+            sys.stderr.write(f"    {ref}: recorded; occurred: {fired or 'none'}\n")
+        else:
+            state["skipped"] += 1
+            sys.stderr.write(f"    {ref}: incomplete — not recorded (retry next run)\n")
+            # Empty output = box not loaded, never a real verdict. A run of zeros means
+            # a dead box; trip the breaker so the pool stops feeding it work.
+            state["dead"] = state["dead"] + 1 if not verdicts else 0
+            if state["dead"] >= DEAD_STREAK_ABORT:
+                state["abort"].set()
+                sys.stderr.write(
+                    f"  ABORT: {state['dead']} sessions in a row produced no verdicts "
+                    "(model down/broken); stopping. They retry next run.\n"
+                )
+    sys.stderr.flush()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument(
         "--dry-run", action="store_true", help="show the delta and exit; touch no model"
     )
     ap.add_argument("--limit", type=int, default=0, help="judge at most N sessions (0 = no cap)")
+    ap.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="parallel sessions (1 = serial, the calibrated default). >1 shares the queue "
+        "across N workers — only speeds up when routing to the concurrent subscription APIs "
+        "(the ollama lease serializes the local box regardless). Use for the historical backfill.",
+    )
+    ap.add_argument(
+        "--skip-ollama",
+        action="store_true",
+        help="route judging OFF the local ollama box to the concurrent subscription APIs "
+        "(gpt-5.5/opus) so --workers actually overlaps. NOT the calibrated qwen — pair with "
+        "--workers for a fast historical backfill; verdicts are model-stamped so you can tell.",
+    )
     ap.add_argument("--cc-root", action="append", help="transcript root override (repeatable)")
     ap.add_argument("--classes", default=",".join(CLASSES))
     ap.add_argument("--timeout", type=int, default=900, help="per-class judge timeout (s)")
@@ -216,35 +271,39 @@ def main():
             print(f"    ... and {len(delta) - 20} more")
         return
 
-    judged = skipped = 0
-    dead_streak = 0  # consecutive sessions that produced ZERO verdicts
-    for i, ref in enumerate(delta, 1):
-        path, mtime = current[ref]
-        sys.stderr.write(f"[{i}/{len(delta)}] {ref}\n")
-        sys.stderr.flush()
-        verdicts, ok = judge_session(path, classes, args.timeout)
-        if ok and verdicts:
-            judge_store.record(ref, "cc", mtime, verdicts)
-            judged += 1
-            dead_streak = 0
-            fired = [v["behavior"] for v in verdicts if v.get("occurred")]
-            sys.stderr.write(f"    recorded; occurred: {fired or 'none'}\n")
-        else:
-            skipped += 1
-            sys.stderr.write("    incomplete — not recorded (will retry next run)\n")
-            # Empty model output = the box isn't loaded, not a real verdict — never
-            # score silence. A few empty transcripts in a row, or a dead ollama box,
-            # both look like zero verdicts; bail rather than grind the whole delta.
-            dead_streak = dead_streak + 1 if not verdicts else 0
-            if dead_streak >= DEAD_STREAK_ABORT:
-                print(
-                    f"  ABORT: {dead_streak} sessions in a row produced no verdicts "
-                    "(model down or transcripts broken). Nothing recorded for them; "
-                    "they retry next run."
-                )
-                break
+    # One code path for serial and parallel: a pool of `workers` threads over the delta.
+    # workers=1 is exactly the old serial behavior (calibrated qwen). workers>1 shares the
+    # queue — each thread takes a DIFFERENT session (no duplication, no flock needed since
+    # it's one process). Threads block on the run_judge subprocess, releasing the GIL, so
+    # they genuinely overlap — but the ollama lease still serializes the local box, so the
+    # win only lands when the ladder routes to the concurrent subscription APIs.
+    workers = max(1, args.workers)
+    if workers > 1:
+        print(f"  fanning out across {workers} workers (share the queue)")
+    if args.skip_ollama:
+        print(
+            "  --skip-ollama: routing to the subscription APIs (NOT calibrated qwen; model-stamped)"
+        )
+    lock = threading.Lock()
+    state = {
+        "started": 0,
+        "judged": 0,
+        "skipped": 0,
+        "dead": 0,
+        "n": len(delta),
+        "abort": threading.Event(),
+    }
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+        list(
+            ex.map(
+                lambda ref: _judge_one(
+                    ref, current, classes, args.timeout, args.skip_ollama, lock, state
+                ),
+                delta,
+            )
+        )
 
-    print(f"  done: judged {judged}, skipped {skipped}.")
+    print(f"  done: judged {state['judged']}, skipped {state['skipped']}.")
 
 
 if __name__ == "__main__":
