@@ -21,6 +21,7 @@ Prints the verdict to stdout; the chosen provider/model + timing to stderr.
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -43,15 +44,25 @@ ROLE_DEFAULT = "judge"
 
 
 def coerce_json(text):
-    """The verdict object out of a model's reply, or None. Dispatched models wrap the
-    JSON in ```json fences and may emit <think> reasoning first (qwen3 et al.), so the
-    raw reply isn't parseable as-is. Extract the outermost {...} and validate it — that
-    survives fences, thinking, and prose without caring which the model used."""
-    i, j = text.find("{"), text.rfind("}")
-    if i == -1 or j <= i:
-        return None
+    """The verdict object out of a model's reply, or None. Dispatched models wrap the JSON
+    in ```json fences and emit <think>/[thinking] reasoning first (qwen3 et al.), so the raw
+    reply isn't parseable as-is. Tolerate the mess instead of aborting on it — mirrors
+    scripts/review-panel/parse.py in the mu repo: drop the thinking, prefer a fenced json
+    block, else fall back to the outermost {...}. A reply that doesn't `json.loads` cleanly
+    is almost always a good verdict wearing a fence or a reasoning trace; treating it as a
+    hard failure needlessly routes the ladder down to the next (non-calibrated) model."""
+    s = re.sub(r"(?is)<think>.*?</think>", "", text)  # strip <think>…</think> reasoning
+    s = re.sub(r"(?im)^\s*\[thinking\].*?$", "", s)  # and [thinking] lines
+    m = re.search(r"```(?:json)?\s*(\{.*\})\s*```", s, re.S)  # a fenced json object, if any
+    if m:
+        s = m.group(1)
+    else:
+        i, j = s.find("{"), s.rfind("}")
+        if i == -1 or j <= i:
+            return None
+        s = s[i : j + 1]
     try:
-        return json.loads(text[i : j + 1])
+        return json.loads(s)
     except json.JSONDecodeError:
         return None
 
@@ -86,6 +97,19 @@ def _dispatch_lib():
     return os.path.expanduser("~/.local/bin/agent-dispatch.sh")
 
 
+def billing_safe_environ():
+    """os.environ with every ANTHROPIC* var removed — the judge's HARD billing guard.
+
+    The judge NEVER bills the metered Anthropic API. Stripping the key means `claude-oauth`
+    resolves to the OAuth ($0) subscription and can never silently fall back to a leaked
+    ANTHROPIC_API_KEY (which is exactly what billed ~74 opus calls on the backfill). This is
+    structural — it holds even if the ambient shell re-exports the key (mu needs it in-env
+    for its own Anthropic calls) and even if the shell-level scrub in agent-dispatch.sh
+    regresses. The judge calls only claude-oauth / codex / ollama, none of which want the
+    metered key. Extracted as a function so it's unit-testable and shared by every path."""
+    return {k: v for k, v in os.environ.items() if not k.startswith("ANTHROPIC")}
+
+
 def dispatch(provider, model, sys_file, transcript_path, timeout):
     """Run one resolved target through the SHARED dispatcher — `agent_dispatch`, sourced
     from agent-dispatch.sh, the one thing everything should use. It routes claude-vs-mu
@@ -94,7 +118,7 @@ def dispatch(provider, model, sys_file, transcript_path, timeout):
     (TOOLS=''); the class rubric is the system prompt. Returns (verdict_text, ok)."""
     script = '. "$AGENT_DISPATCH_LIB" && agent_dispatch "$1" "$2" "$3"'
     env = {
-        **os.environ,
+        **billing_safe_environ(),  # hard billing guard — see billing_safe_environ()
         "AGENT_DISPATCH_LIB": _dispatch_lib(),
         "SYSPROMPT": sys_file,
         "TOOLS": "",  # pure read-transcript -> verdict; no read/grep/bash tools

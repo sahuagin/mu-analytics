@@ -115,10 +115,15 @@ def select_delta(current, ledger):
 
 
 def judge_session(path, classes, timeout, skip_ollama=False):
-    """Render one transcript and judge it across every class. Returns (verdicts, ok):
-    verdicts is the list of per-class result dicts; ok is True only if EVERY class
-    returned a verdict (a partial result is not recorded, so it retries next run).
-    skip_ollama drops the local box from run_judge's ladder (parallel-backfill routing)."""
+    """Render one transcript and judge it across every class — one run_judge call PER class,
+    the design the rubric was validated on (METHODOLOGY.md: 100% recall / 0% FP, one class
+    per call). Returns (verdicts, ok): ok is True only if EVERY class returned a verdict (a
+    partial result is not recorded, so it retries next run). skip_ollama drops the local box
+    from run_judge's ladder (parallel-backfill routing).
+
+    Every rung of the ladder is $0 (qwen local / codex + opus-OAuth subscription) as long as
+    run_judge's billing guard holds — see run_judge.billing_safe_environ; the per-class call
+    count is a latency cost, not a dollar cost."""
     rr = subprocess.run([sys.executable, RENDER, path], capture_output=True, text=True, timeout=300)
     if not rr.stdout.strip():
         return [], False
@@ -149,7 +154,7 @@ def judge_session(path, classes, timeout, skip_ollama=False):
                         "n_evidence": len(v.get("evidence", [])),
                         "model": v.get("judge_model"),
                         # Keep the judge's actual reasoning — regenerating it is a full
-                        # ~6-min re-judge, so never throw it away at ingest.
+                        # re-judge, so never throw it away at ingest.
                         "summary": v.get("summary"),
                         "evidence": v.get("evidence"),  # [{turn, quote, why}, ...]
                     }
