@@ -46,7 +46,18 @@ SCRIPTS = os.path.join(HERE, "behavior-judge", "scripts")
 RENDER = os.path.join(SCRIPTS, "render_transcript.py")
 JUDGE = os.path.join(SCRIPTS, "run_judge.py")
 
-CLASSES = ["false_success", "map_as_terrain", "scope_overreach", "relitigation", "dismissiveness"]
+CLASSES = [
+    "false_success",
+    "map_as_terrain",
+    "scope_overreach",
+    "relitigation",
+    "dismissiveness",
+    # v2 (degradation-signature sweep) — in the default list so the daily cron
+    # judges them on every new session without a crontab change.
+    "performative_closing",
+    "outcome_prediction",
+    "rule_echo",
+]
 
 # Stop the run after this many consecutive zero-verdict sessions — the signature of a
 # down/unloaded ollama box. Better to bail than burn the whole delta against silence.
@@ -147,6 +158,7 @@ def judge_session(path, classes, timeout, skip_ollama=False):
                         "severity": v.get("severity"),
                         "confidence": v.get("confidence"),
                         "n_evidence": len(v.get("evidence", [])),
+                        "n_evidence_verified": v.get("n_evidence_verified"),
                         "model": v.get("judge_model"),
                         # Keep the judge's actual reasoning — regenerating it is a full
                         # ~6-min re-judge, so never throw it away at ingest.
@@ -226,6 +238,20 @@ def main():
     )
     ap.add_argument("--cc-root", action="append", help="transcript root override (repeatable)")
     ap.add_argument("--classes", default=",".join(CLASSES))
+    ap.add_argument(
+        "--missing-classes",
+        action="store_true",
+        help="select ONLY sessions lacking a verdict for any of --classes (pure "
+        "rubric-addition backfill), instead of the new/grown-file mtime delta",
+    )
+    ap.add_argument(
+        "--backfill-limit",
+        type=int,
+        default=25,
+        help="in the normal (mtime) mode, also judge up to N historical sessions "
+        "missing any of --classes each run, so rubric additions drain serially "
+        "from cron with no manual backfill run (0 = off)",
+    )
     ap.add_argument("--timeout", type=int, default=900, help="per-class judge timeout (s)")
     args = ap.parse_args()
     classes = [c.strip() for c in args.classes.split(",") if c.strip()]
@@ -244,13 +270,46 @@ def main():
     roots = [os.path.expanduser(r) for r in (args.cc_root or [])] or _config_cc_roots()
     current = enumerate_cc(roots)
     ledger = judge_store.processed_mtimes()
-    delta = select_delta(current, ledger)
+    backlog = []
+    cls_want = set(classes)
+    present = judge_store.present_by_ref(classes)
+    # Per-ref class list: mtime-delta sessions (new or grown files) re-judge the full
+    # list; backlog sessions judge only what they're missing.
+    cls_for = {}
+
+    def _missing(ref):
+        return [c for c in classes if c not in present.get(ref, ())]
+
+    if args.missing_classes:
+        delta = sorted(
+            (ref for ref in current if cls_want - present.get(ref, set())),
+            key=lambda r: current[r][1],
+            reverse=True,
+        )
+        cls_for = {ref: _missing(ref) for ref in delta}
+        sel = f"missing-classes({','.join(classes)})"
+    else:
+        delta = select_delta(current, ledger)
+        sel = "mtime"
+        if args.backfill_limit:
+            # Chip at rubric-addition history: sessions already past the mtime
+            # watermark but lacking one of the requested classes. Capped per run so
+            # the drain is a bounded serial tail on the daily cron, never a burst.
+            seen = set(delta)
+            backlog = sorted(
+                (ref for ref in current if ref not in seen and cls_want - present.get(ref, set())),
+                key=lambda r: current[r][1],
+                reverse=True,
+            )[: args.backfill_limit]
+            cls_for = {ref: _missing(ref) for ref in backlog}
 
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] judge-incremental")
     print(f"  roots: {roots}")
     print(
-        f"  on disk: {len(current)} cc sessions   already judged: {len(ledger)}   delta: {len(delta)}"
+        f"  on disk: {len(current)} cc sessions   already judged: {len(ledger)}   "
+        f"delta[{sel}]: {len(delta)}" + (f"   class-backlog: +{len(backlog)}" if backlog else "")
     )
+    delta = delta + backlog
 
     if not delta:
         print("  nothing new — exiting (ollama not touched).")
@@ -296,8 +355,16 @@ def main():
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
         list(
             ex.map(
+                # Backlog sessions judge only their missing classes (cls_for);
+                # mtime-delta sessions take the full requested list.
                 lambda ref: _judge_one(
-                    ref, current, classes, args.timeout, args.skip_ollama, lock, state
+                    ref,
+                    current,
+                    cls_for.get(ref, classes),
+                    args.timeout,
+                    args.skip_ollama,
+                    lock,
+                    state,
                 ),
                 delta,
             )

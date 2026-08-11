@@ -48,6 +48,8 @@ CREATE TABLE IF NOT EXISTS verdicts(
     severity      TEXT,
     confidence    REAL,
     n_evidence    INTEGER,
+    n_evidence_verified INTEGER,      -- quotes verified verbatim against the transcript
+                                      -- (run_judge's fabrication guard); NULL = pre-guard
     model         TEXT,               -- which judge produced it (provider/model); only
                                       -- qwen3.6 is rubric-validated, fallbacks are not
     summary       TEXT,               -- the judge's one-line rationale for this verdict
@@ -68,6 +70,8 @@ def _ensure():
     for col in ("model", "summary", "evidence"):
         if col not in cols:
             con.execute(f"ALTER TABLE verdicts ADD COLUMN {col} TEXT")
+    if "n_evidence_verified" not in cols:
+        con.execute("ALTER TABLE verdicts ADD COLUMN n_evidence_verified INTEGER")
     con.commit()
     return con
 
@@ -79,6 +83,26 @@ def processed_mtimes():
     whose current file mtime exceeds the stored value has grown since (re-judge it)."""
     con = _ensure()
     out = {ref: mt for ref, mt in con.execute("SELECT session_ref, src_mtime FROM processed")}
+    con.close()
+    return out
+
+
+def present_by_ref(behaviors):
+    """{session_ref: subset of `behaviors` already holding a verdict row}.
+
+    The class-aware selector's source: verdicts key on (session_ref, behavior) while
+    the processed watermark keys on session_ref alone, so a rubric-addition class
+    never backfills via mtime — and a partially-covered session should be judged
+    only on its missing classes, not re-run on the whole list."""
+    if not behaviors:
+        return {}
+    con = _ensure()
+    ph = ",".join("?" for _ in behaviors)
+    out = {}
+    for ref, beh in con.execute(
+        f"SELECT session_ref, behavior FROM verdicts WHERE behavior IN ({ph})", list(behaviors)
+    ):
+        out.setdefault(ref, set()).add(beh)
     con.close()
     return out
 
@@ -101,8 +125,8 @@ def record(session_ref, fleet, src_mtime, verdicts, processed_at=None):
         evidence = v.get("evidence")
         con.execute(
             "INSERT OR REPLACE INTO verdicts(session_ref, fleet, behavior, occurred, severity, "
-            "confidence, n_evidence, model, summary, evidence, src_mtime, judged_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "confidence, n_evidence, n_evidence_verified, model, summary, evidence, src_mtime, "
+            "judged_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [
                 session_ref,
                 fleet,
@@ -111,6 +135,7 @@ def record(session_ref, fleet, src_mtime, verdicts, processed_at=None):
                 v.get("severity"),
                 v.get("confidence"),
                 v.get("n_evidence"),
+                v.get("n_evidence_verified"),
                 v.get("model"),
                 v.get("summary"),
                 json.dumps(evidence) if evidence is not None else None,
@@ -129,7 +154,7 @@ def read_verdicts(only_occurred=False):
     con = _ensure()
     sql = (
         "SELECT session_ref, fleet, behavior, occurred, severity, confidence, n_evidence, "
-        "model, summary, evidence, src_mtime, judged_at FROM verdicts"
+        "n_evidence_verified, model, summary, evidence, src_mtime, judged_at FROM verdicts"
     )
     if only_occurred:
         sql += " WHERE occurred = 1"
@@ -141,6 +166,7 @@ def read_verdicts(only_occurred=False):
         "severity",
         "confidence",
         "n_evidence",
+        "n_evidence_verified",
         "model",
         "summary",
         "evidence",
