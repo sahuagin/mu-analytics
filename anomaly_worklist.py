@@ -255,7 +255,22 @@ should not dominate the top of the ranking.
     return rank_of, worklist
 
 
+def _preflight_ml():
+    """Import the lazy ML deps BEFORE the expensive feature build — same failure
+    mode as degradation._preflight_ml (a pkg-flavor change orphaning the pinned
+    interpreter's ML packages must fail fast and name the module)."""
+    try:
+        import numpy  # noqa: F401
+        import sklearn.ensemble  # noqa: F401
+    except ModuleNotFoundError as e:
+        sys.exit(
+            f"anomaly_worklist: missing ML dependency '{e.name}' for {sys.executable} — "
+            "align python_interpreter_path (config.toml) with the installed pkg flavors"
+        )
+
+
 def main():
+    _preflight_ml()
     out = Path(sys.argv[1]) if len(sys.argv) > 1 else Path.home() / "mu-stats/anomaly-worklist.md"
     table = build_table(engine.connect())
     feat = table["feat"]
