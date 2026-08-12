@@ -39,7 +39,11 @@ run_step() {
   name=$1
   shift
   start=$(now_s)
-  if "$@" >/dev/null 2>&1; then
+  # Keep stderr: the degradation probe failed silently for a month because this
+  # function sent everything to /dev/null. On failure, the tail of stderr goes to
+  # the cron log so the log line is diagnosable without a manual re-run.
+  errf="${TMPDIR:-/tmp}/mu-analytics-step-err.$$"
+  if "$@" >/dev/null 2>"$errf"; then
     status=ok
   else
     status=warn
@@ -49,7 +53,9 @@ run_step() {
     log "$name ok (${dur}s)"
   else
     log "warn: $name failed (${dur}s)"
+    tail -3 "$errf" | sed 's/^/      /'
   fi
+  rm -f "$errf"
 }
 
 start_total=$(now_s)
