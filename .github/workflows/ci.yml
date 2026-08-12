@@ -34,7 +34,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install ty duckdb
+      # ty is pre-1.0 and each release adds diagnostics — unpinned, main goes red
+      # without any code change (happened 2026-08: 0.0.55 green, latest flags
+      # panels.py). Pin to the known-green version; bump deliberately.
+      - run: pip install ty==0.0.55 duckdb
       - run: ty check
 
   test:

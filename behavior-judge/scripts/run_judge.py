@@ -21,6 +21,7 @@ Prints the verdict to stdout; the chosen provider/model + timing to stderr.
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -43,15 +44,25 @@ ROLE_DEFAULT = "judge"
 
 
 def coerce_json(text):
-    """The verdict object out of a model's reply, or None. Dispatched models wrap the
-    JSON in ```json fences and may emit <think> reasoning first (qwen3 et al.), so the
-    raw reply isn't parseable as-is. Extract the outermost {...} and validate it — that
-    survives fences, thinking, and prose without caring which the model used."""
-    i, j = text.find("{"), text.rfind("}")
-    if i == -1 or j <= i:
-        return None
+    """The verdict object out of a model's reply, or None. Dispatched models wrap the JSON
+    in ```json fences and emit <think>/[thinking] reasoning first (qwen3 et al.), so the raw
+    reply isn't parseable as-is. Tolerate the mess instead of aborting on it: drop the
+    thinking, prefer a fenced json block, else fall back to the outermost {...}. A reply
+    that doesn't `json.loads` cleanly is almost always a good verdict wearing a fence or a
+    reasoning trace; treating it as a hard failure needlessly routes the ladder down to the
+    next (non-calibrated) model. (Folded from PR #66, which this supersedes.)"""
+    s = re.sub(r"(?is)<think>.*?</think>", "", text)
+    s = re.sub(r"(?im)^\s*\[thinking\].*?$", "", s)
+    m = re.search(r"```(?:json)?\s*(\{.*\})\s*```", s, re.S)
+    if m:
+        s = m.group(1)
+    else:
+        i, j = s.find("{"), s.rfind("}")
+        if i == -1 or j <= i:
+            return None
+        s = s[i : j + 1]
     try:
-        return json.loads(text[i : j + 1])
+        return json.loads(s)
     except json.JSONDecodeError:
         return None
 
@@ -93,8 +104,12 @@ def dispatch(provider, model, sys_file, transcript_path, timeout):
     demote-when-held already steers resolution off a busy box. The judge needs no tools
     (TOOLS=''); the class rubric is the system prompt. Returns (verdict_text, ok)."""
     script = '. "$AGENT_DISPATCH_LIB" && agent_dispatch "$1" "$2" "$3"'
+    # HARD billing guard: strip every ANTHROPIC* var so a key present in the ambient
+    # environment (shell export, cron env) can never route a judge call to the metered
+    # API — claude targets resolve to the OAuth subscription or fail. The judge's
+    # ladder wants only subscription/local targets; a metered fallback is never correct.
     env = {
-        **os.environ,
+        **{k: v for k, v in os.environ.items() if not k.startswith("ANTHROPIC")},
         "AGENT_DISPATCH_LIB": _dispatch_lib(),
         "SYSPROMPT": sys_file,
         "TOOLS": "",  # pure read-transcript -> verdict; no read/grep/bash tools
@@ -109,6 +124,24 @@ def dispatch(provider, model, sys_file, transcript_path, timeout):
     )
     text = (r.stdout or "").strip()
     return text, bool(text)
+
+
+def verify_evidence(verdict, transcript_path):
+    """Stamp n_evidence_verified: how many evidence quotes literally appear in the
+    transcript (whitespace-normalized substring). The verbatim-evidence requirement is
+    the rubric's anchor, and fabricated quotes are a known failure mode (universal in
+    the local-model routing bench) — consumers can discount a verdict whose quotes
+    don't check out instead of trusting the count of claimed evidence."""
+
+    def norm(s):
+        return " ".join(str(s).split())
+
+    hay = norm(open(transcript_path, errors="ignore").read())
+    ev = verdict.get("evidence") or []
+    verdict["n_evidence_verified"] = sum(
+        1 for e in ev if isinstance(e, dict) and e.get("quote") and norm(e["quote"]) in hay
+    )
+    return verdict
 
 
 def direct_ollama(host, model, system, transcript_path, timeout):
@@ -159,15 +192,16 @@ def main():
     system = sys_t.replace("{CLASS_RUBRIC}", class_rubric(args.cls))
 
     if args.host:  # direct/standalone mode
-        print(
-            direct_ollama(
-                args.host,
-                args.model or "qwen3.6:35b-a3b-q8_0",
-                system,
-                args.transcript,
-                args.timeout,
-            )
-        )
+        model = args.model or "qwen3.6:35b-a3b-q8_0"
+        text = direct_ollama(args.host, model, system, args.transcript, args.timeout)
+        verdict = coerce_json(text)
+        if verdict is None:
+            # keep the raw reply visible for debugging, but fail loudly — an
+            # unparseable verdict must not read as a clean run.
+            print(text)
+            sys.exit(f"judge: ollama/{model} returned no parseable JSON verdict")
+        verdict["judge_model"] = f"ollama/{model}"
+        print(json.dumps(verify_evidence(verdict, args.transcript)))
         return
 
     ladder = role_ladder(args.role)
@@ -193,6 +227,7 @@ def main():
             text, ok = dispatch(provider, model, sys_file, args.transcript, args.timeout)
             verdict = coerce_json(text) if ok else None
             if verdict is not None:
+                verify_evidence(verdict, args.transcript)
                 # Stamp WHICH target produced this verdict — only the rank-0 ollama model is
                 # rubric-validated; a deranked/busy box routes to fallbacks whose verdicts the
                 # consumer must be able to tell apart. Survives in the verdict's own JSON.

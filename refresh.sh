@@ -72,6 +72,9 @@ run_step "marks ingest" "$here/run" marks_store.py ingest
 # section folds in (replaces the old degradation_ml.py -> mu_audit_sweep.py chain).
 run_step "degradation probe" "$here/run" degradation.py
 run_step "audit sweep" "$here/run" audit_sweep.py
+# behavior-signature sweep report (dated markdown next to the dashboard — the
+# sweep's read surface; semantic verdicts accrue via the daily judge cron).
+run_step "behavior report" "$here/run" behavior_report.py
 # regenerate the dashboard into the served path. Keep its summary visible.
 gen_start=$(now_s)
 if "$here/run" gen_dashboard.py "$out"; then
