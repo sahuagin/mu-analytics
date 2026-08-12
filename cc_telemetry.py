@@ -457,6 +457,37 @@ def convert_session(path: str):
     return sid, events
 
 
+def discover_transcripts(patterns: list[str]) -> tuple[list[str], dict[str, int]]:
+    """Expand transcript glob patterns into the candidate file list, with a
+    reconciliation summary (bead mu-tijj: a fixed depth-1 glob once silently
+    ingested only ~54% of on-disk transcripts — every discovery-side drop must
+    be a counted number, never a silent loss).
+
+    Returns (files, recon). `files` is the sorted, deduped candidate list.
+    `recon` accounts for every raw glob hit:
+      files_on_disk_matching_glob  raw hits across all patterns (pre-dedup)
+      deduped                      duplicates removed (overlapping roots; ** also
+                                   re-matches the depth-1 layer)
+      dropped_non_transcript       known non-transcripts dropped by name
+                                   (history.jsonl, the per-machine prompt-history
+                                   file — different schema, yields no SessionEvents)
+      candidates                   len(files) == matching - deduped - dropped
+    """
+    matched: list[str] = []
+    for pat in patterns:
+        # recursive=True so ** spans any depth (projects/<slug>/, experiments/...).
+        matched.extend(glob.glob(os.path.expanduser(pat), recursive=True))
+    unique = set(matched)
+    files = sorted(f for f in unique if os.path.basename(f) != "history.jsonl")
+    recon = {
+        "files_on_disk_matching_glob": len(matched),
+        "deduped": len(matched) - len(unique),
+        "dropped_non_transcript": len(unique) - len(files),
+        "candidates": len(files),
+    }
+    return files, recon
+
+
 def main():
     import tomllib
 
@@ -471,43 +502,51 @@ def main():
         # so recurse with ** rather than the old fixed depth-1 `*/*.jsonl`.
         patterns = [os.path.join(r, "**", "*.jsonl") for r in cfg["paths"]["cc_log_roots"]]
         out_dir = cfg["paths"]["cc_events_out"]
-    files = []
-    for pat in patterns:
-        # recursive=True so ** spans any depth; dedup since ** also matches the
-        # depth-1 layer a non-recursive glob would have seen.
-        files.extend(glob.glob(os.path.expanduser(pat), recursive=True))
-    # history.jsonl (the per-machine prompt-history file) is NOT a transcript —
-    # different schema, yields no SessionEvents — so drop it from the sweep.
-    files = sorted({f for f in files if os.path.basename(f) != "history.jsonl"})
+    files, recon = discover_transcripts(patterns)
     daemon_dir = os.path.join(out_dir, "claude-code")
     os.makedirs(daemon_dir, exist_ok=True)
-    n_sessions = n_events = n_skipped = 0
+    n_sessions = n_events = n_skipped = n_denied = 0
     kinds = collections.Counter()
     for f in files:
         try:
             res = convert_session(f)
         except PermissionError:
+            n_denied += 1
             continue
         except Exception:
             # recursive discovery sweeps heterogeneous jsonl; one non-transcript
             # or malformed file must not abort the whole emit.
             n_skipped += 1
             continue
-        if not res:
+        if not res or not res[1]:
+            n_skipped += 1  # parsed but no session turns — not a transcript; skip
             continue
         sid, events = res
-        if not events:
-            n_skipped += 1
-            continue  # parsed but no session turns — not a transcript; skip
         with open(os.path.join(daemon_dir, f"{sid}.jsonl"), "w") as out:
             for ev in events:
                 out.write(json.dumps(ev, separators=(",", ":")) + "\n")
                 kinds[ev["payload"]["kind"]] += 1
         n_sessions += 1
         n_events += len(events)
+    # Reconciliation: on-disk vs ingested, delta explained (bead mu-tijj).
+    print(
+        f"discovered {recon['files_on_disk_matching_glob']} on-disk jsonl -> "
+        f"{recon['candidates']} candidate transcript(s) "
+        f"({recon['deduped']} duplicate(s) deduped, "
+        f"{recon['dropped_non_transcript']} non-transcript dropped by name)"
+    )
     print(
         f"emitted {n_sessions} session(s), {n_events} events, {n_skipped} skipped (non-transcript)"
     )
+    if n_denied:
+        print(f"  permission-denied (candidates left unread): {n_denied}")
+    unexplained = recon["candidates"] - (n_sessions + n_skipped + n_denied)
+    if unexplained:
+        print(
+            f"  WARNING: {unexplained} candidate transcript(s) unaccounted for — "
+            f"candidates={recon['candidates']} != emitted={n_sessions} + "
+            f"skipped={n_skipped} + denied={n_denied}; discovery/ingest drift"
+        )
     print("  kinds: " + ", ".join(f"{k}={n}" for k, n in kinds.most_common()))
     note = "" if _MA else "  [mu_anthropic_py NOT importable — all fallback; build the wheel]"
     print(f"  parse: {_PARSE['typed']} typed (mu-anthropic), {_PARSE['fallback']} fallback{note}")
