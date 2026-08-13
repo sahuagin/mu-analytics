@@ -8,9 +8,9 @@
 # bash for the pr recipe's ${@:2} positional forwarding.
 set shell := ["bash", "-cu"]
 
-# Canonical interpreter: the pkg python3.11 that has duckdb. One source of truth
-# (same value the ./run launcher resolves). Falls back to python3 off-host.
-py := `tq -f config.toml -r python_interpreter_path 2>/dev/null || echo python3`
+# Interpreter: the repo venv when it exists (the runtime boundary ./run enforces),
+# else the config seed python (pre-venv checkouts, CI). Overridable: just py=... <recipe>.
+py := `test -x .venv/bin/python && realpath .venv/bin/python || tq -f config.toml -r python_interpreter_path 2>/dev/null || echo python3`
 
 # Default recipe: list every available recipe (same as bare `just`).
 list:

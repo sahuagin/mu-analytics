@@ -8,10 +8,16 @@
 # Shell bootstraps the interpreter:   tq -f config.toml -r python_interpreter_path
 # Python reads the rest natively:     tomllib.load(open("config.toml","rb"))  (3.11 stdlib)
 
-# Canonical interpreter: the python that actually has polars installed.
-# Beware a second, pkg-blind python shadowing it on PATH (a sys.path that lacks
-# the site-packages where polars lives) — point this at the one that imports polars.
-python_interpreter_path = "/usr/local/bin/python3.11"
+# SEED interpreter: the system python the repo venv is built from. The runtime
+# is the venv (./run execs .venv/bin/python); this path is used only to create it:
+#   uv venv --python <this> --system-site-packages --no-python-downloads .venv
+#   just build-parsers
+# Point it at the pkg python whose site-packages carry the compiled deps
+# (duckdb/polars/numpy/scikit-learn) — pkg is the only binary source on the host;
+# uv never downloads pythons or wheels here. Recreate the venv + parsers whenever
+# pkg migrates its default python; ./run fails loudly (with these commands) if
+# the venv is missing, and the ML preflight screams in the cron log meanwhile.
+python_interpreter_path = "/usr/local/bin/python3.12"
 
 [paths]
 # Consolidated per-machine session archive. Both fleets' raw logs live under it:

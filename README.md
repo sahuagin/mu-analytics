@@ -26,12 +26,24 @@ cp config.example.toml config.toml   # first time only: then edit [paths] for yo
 ./run gen_dashboard.py     # build the live dashboard -> dist/ (self-contained, nginx-servable)
 ```
 
-`./run <script.py> [args]` resolves the **canonical interpreter** from `config.toml`
-via `tq` and execs it. The canonical interpreter is `/usr/local/bin/python3.11`
-(the **pkg** python — it has polars and finds `lib/`). **Do NOT use
-`~/.local/bin/python`** — it's a second python3.11 that is *pkg-blind* (its
-`sys.path` lacks `/usr/local/lib/python3.11/site-packages`), so `import polars`
-fails there. That shadowing is the classic "I installed it and it's not found" trap.
+`./run <script.py> [args]` execs the **repo venv** (`.venv/bin/python`) — the
+runtime boundary. The venv is created once from the seed python in `config.toml`,
+with system site-packages (pkg stays the only source of interpreter + compiled
+deps; uv creates the boundary and downloads nothing on the host):
+
+```sh
+uv venv --python "$(tq -f config.toml -r python_interpreter_path)" \
+        --system-site-packages --no-python-downloads .venv
+just build-parsers                    # pyo3 parsers, bound to the venv ABI
+```
+
+No venv = `./run` fails loudly with those commands (a silent fallback to a bare
+system python is how the ML deps vanished for a month, 2026-07/08: a pkg python
+migration orphaned the pinned interpreter's packages with no error anywhere).
+When pkg migrates its default python again: update the seed in `config.toml`,
+re-run the two commands above. `uv sync` is for Linux CI only — uv's resolver
+ignores system site-packages and would try to source-build the FreeBSD-wheel-less
+compiled deps (`[tool.uv] no-install-package` fences duckdb; see pyproject.toml).
 
 ---
 
@@ -41,7 +53,7 @@ fails there. That shadowing is the classic "I installed it and it's not found" t
 |---|---|
 | `config.example.toml` | tracked template — `cp` to `config.toml` and edit `[paths]`. Carries `[rates]`/`[cache_multipliers]`/`[cost_kind]` ready to use. |
 | `config.toml` | your machine's copy (gitignored — holds absolute paths). Single source of truth at runtime; edit this, not code. |
-| `run` | launcher — `tq -f config.toml -r python_interpreter_path` then exec |
+| `run` | launcher — execs `.venv/bin/python`; fails loudly (with the creation commands) if the venv is missing |
 | `cc_telemetry.py` | cc transcript → mu-core `TaskTelemetry` (+ `tool_call`) JSONL, per session |
 | `cost.py` | read both sinks via stdlib `sqlite3`→polars, join `[rates]`, compute cost, split by `cost_kind`, hand-check |
 | `sample_data.py` | `build()` assembles the dashboard `DATA` contract from the sink; `./run sample_data.py` prints it as JSON |
@@ -151,7 +163,8 @@ summary` / `rate`. We **reuse** that — cc just has to produce the right events
 
 ## Config reference (`config.toml`)
 
-- `python_interpreter_path` — the pkg python3.11 (top-level scalar `tq` reads).
+- `python_interpreter_path` — the SEED python the venv is built from (top-level
+  scalar `tq` reads); the runtime itself is `.venv/bin/python` via `./run`.
 - `[paths]` — `mu_sink_db` (RO, mu's real sink), `cc_sink_db`, `cc_events_out`,
   `cc_log_roots` (all 3 cc accounts).
 - `[rates]` — `"model" = { input, output }` USD/Mtok. `[cache_multipliers]`.

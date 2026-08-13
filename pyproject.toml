@@ -23,6 +23,17 @@ admin = ["requests>=2"]
 # unittest (no install needed); pytest is optional and discovers the same tests.
 dev = ["pytest>=8", "ruff>=0.15", "ty"]
 
+[tool.uv]
+# Script project: uv must never build/install mu-analytics itself.
+package = false
+# On the FreeBSD host the compiled deps come from pkg through the venv's
+# --system-site-packages; PyPI has no FreeBSD wheels for them, so uv must not
+# try to install its own copy (resolution still pins them in the lockfile via
+# other platforms' wheel metadata). Extras (cost/ml) are host-synced only with
+# an explicit --no-install-package for their packages — or not at all — until a
+# local wheel index exists. On Linux CI, wheels exist and none of this bites.
+no-install-package = ["duckdb"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"

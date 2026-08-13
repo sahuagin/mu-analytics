@@ -1,9 +1,20 @@
 #!/bin/sh
-# Resolve the canonical interpreter from config.toml, then run a project script
-# under it. The whole point: the interpreter path lives in ONE place.
+# Run a project script under the repo venv (.venv/) — the runtime boundary.
+# The venv is built FROM the system python WITH system site-packages, so pkg
+# stays the only source of interpreter + compiled deps; the venv just makes the
+# binding explicit and per-project. No .venv is a loud, instructive failure:
+# a silent fallback to a bare system python is how the ML deps vanished for a
+# month without a sound (2026-07/08).
 #   ./run cc_telemetry.py <args...>
 set -eu
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-py=$(tq -f "$here/config.toml" -r python_interpreter_path)
+py="$here/.venv/bin/python"
+if [ ! -x "$py" ]; then
+  seed=$(tq -f "$here/config.toml" -r python_interpreter_path 2>/dev/null || echo python3)
+  echo "run: no venv at $here/.venv — create it, then rebuild the parsers:" >&2
+  echo "  uv venv --python $seed --system-site-packages --no-python-downloads $here/.venv" >&2
+  echo "  just py=$here/.venv/bin/python build-parsers" >&2
+  exit 1
+fi
 script=$1; shift
 exec "$py" "$here/$script" "$@"
