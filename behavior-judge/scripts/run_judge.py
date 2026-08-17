@@ -64,7 +64,13 @@ def coerce_json(text):
     try:
         return json.loads(s)
     except json.JSONDecodeError:
-        return None
+        # Leading-zero integers ("turn":009 — qwen3.8 emits them) are the one
+        # observed strict-JSON violation. Repair only after a failed parse so
+        # a valid verdict's quote text can never be rewritten.
+        try:
+            return json.loads(re.sub(r'("\w+"\s*:\s*)0+(\d)', r"\1\2", s))
+        except json.JSONDecodeError:
+            return None
 
 
 def role_ladder(role):
