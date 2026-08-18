@@ -78,6 +78,18 @@ _DEFAULT_SOURCES = [(MU_GLOB, "mu", _MU_DAEMON, _MU_SESSION)]
 if CC_GLOB:
     _DEFAULT_SOURCES.append((CC_GLOB, "cc", _CC_DAEMON, _CC_SESSION))
 
+# Resource bounds. DuckDB's defaults are 80% of host RAM and one thread per
+# core; materializing the full archive under those OOMed the host (mu-mucm.8).
+# temp_directory lets a bounded connection spill big sorts to disk — an
+# in-memory connection has nowhere to spill without it and fails instead.
+_MEMORY_LIMIT = "16GB"
+_THREADS = 8
+_SPILL_DIR = os.path.join(HERE, ".duckdb-spill")
+
+# The default (no-arg) connection, cached per process: every caller shares one
+# materialized corpus instead of each building its own copy.
+_DEFAULT_CON: "duckdb.DuckDBPyConnection | None" = None
+
 
 def _glob_has_files(pattern: str) -> bool:
     """True if the glob matches >=1 file (read_json errors on a no-match pattern)."""
@@ -132,11 +144,18 @@ def connect(
 
     - Production (no args): UNION every present fleet (mu + cc), so one schema
       feeds every panel for both fleets. Empty/missing fleets are skipped.
+      Cached per process — repeat calls return the same connection, so don't
+      close it.
     - `glob=`/`fleet=`: a single explicit source (the hermetic-fixture path used
       by tests), keyed mu-style (daemon dir + session_id).
     - `sources=`: explicit (glob, fleet, daemon_expr[, session_expr]) tuples;
       a 3-tuple defaults session_expr to daemon_expr.
     """
+    global _DEFAULT_CON
+    default = glob is None and sources is None
+    if default and _DEFAULT_CON is not None:
+        return _DEFAULT_CON
+
     if glob is not None:
         srcs: list[tuple[str, ...]] = [(glob, fleet, _MU_DAEMON, _MU_SESSION)]
     elif sources is not None:
@@ -146,6 +165,10 @@ def connect(
         srcs = [s for s in _DEFAULT_SOURCES if _glob_has_files(s[0])]
 
     con = duckdb.connect()
+    os.makedirs(_SPILL_DIR, exist_ok=True)
+    con.execute(f"SET memory_limit = '{_MEMORY_LIMIT}'")
+    con.execute(f"SET threads = {_THREADS}")
+    con.execute(f"SET temp_directory = '{_SPILL_DIR}'")
     if not srcs:
         # No event logs present anywhere — register an empty, correctly-typed view
         # so callers can query `ev` without a crash (returns zero rows).
@@ -155,6 +178,8 @@ def connect(
             "NULL::VARCHAR AS daemon, NULL::VARCHAR AS session, NULL::VARCHAR AS kind, "
             "NULL::JSON AS payload, NULL::VARCHAR AS fleet WHERE false"
         )
+        if default:
+            _DEFAULT_CON = con
         return con
 
     union = "\n        UNION ALL\n".join(_select_for(*s) for s in srcs)
@@ -162,10 +187,12 @@ def connect(
     # The dashboard builds many independent panel slices from `ev`. Leaving `ev` as
     # a read_json view makes each slice re-scan the same JSONL corpus; materializing
     # once per connection turns refresh into "read event logs once, query many
-    # times". This is intentionally per-process/temporary: refresh.sh re-compacts
-    # before gen_dashboard, then gen_dashboard opens a fresh connection snapshot.
+    # times". Per-process/temporary: each refresh step gets a fresh snapshot of
+    # whatever the compact steps wrote before it started.
     con.execute("CREATE OR REPLACE TEMP TABLE _ev_materialized AS SELECT * FROM ev")
     con.execute("CREATE OR REPLACE TEMP VIEW ev AS SELECT * FROM _ev_materialized")
+    if default:
+        _DEFAULT_CON = con
     return con
 
 
