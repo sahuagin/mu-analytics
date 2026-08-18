@@ -21,3 +21,4 @@ __pycache__/
 
 # runtime boundary — the repo venv (created from the config seed python; see run)
 .venv/
+.duckdb-spill/
