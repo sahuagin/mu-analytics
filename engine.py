@@ -17,11 +17,15 @@ surface feeds every panel for both fleets. cc previously emitted only
 tool_call + task_telemetry; it now carries the rich behavioral kinds
 (user_message / assistant_message_event / tool_result / done) too.
 
-Run:  ./run engine.py        # smoke: prints the per-kind histogram per fleet
+Run:  ./run engine.py           # smoke: prints the per-kind histogram per fleet
+      ./run engine.py snapshot  # refresh the parquet snapshot (refresh.sh step)
 """
 
 import glob as _glob
+import hashlib
+import json
 import os
+import sys
 import tomllib
 
 import duckdb
@@ -90,6 +94,13 @@ _SPILL_DIR = os.path.join(HERE, ".duckdb-spill")
 # materialized corpus instead of each building its own copy.
 _DEFAULT_CON: "duckdb.DuckDBPyConnection | None" = None
 
+# Persistent corpus snapshot (mu-mucm.9/.10): one parquet file holding the parsed
+# ev rows for both fleets, plus a manifest of the source files it was built from.
+# snapshot_refresh() re-parses only changed sources; connect() reads the parquet
+# instead of re-parsing 37k JSONL files per process. Lives in data/ (gitignored).
+_SNAPSHOT = os.path.join(HERE, "data", "ev-snapshot.parquet")
+_MANIFEST = _SNAPSHOT + ".manifest.json"
+
 
 def _glob_has_files(pattern: str) -> bool:
     """True if the glob matches >=1 file (read_json errors on a no-match pattern)."""
@@ -110,7 +121,17 @@ def events_present() -> bool:
     return _dir_has_jsonl(MU_EVENTS) or _dir_has_jsonl(CC_EVENTS)
 
 
-def _select_for(glob: str, fleet: str, daemon_expr: str, session_expr: str) -> str:
+def _sql_str(s: str) -> str:
+    return "'" + s.replace("'", "''") + "'"
+
+
+def _select_for(
+    glob: str, fleet: str, daemon_expr: str, session_expr: str, files: list[str] | None = None
+) -> str:
+    """The parse SELECT for one fleet. Source is the glob, or an explicit file
+    list (the incremental-snapshot path). `filename` rides along so snapshot rows
+    can be dropped per source file when that file changes."""
+    src = "[" + ", ".join(_sql_str(f) for f in files) + "]" if files is not None else _sql_str(glob)
     return f"""
         SELECT
             id,
@@ -120,14 +141,128 @@ def _select_for(glob: str, fleet: str, daemon_expr: str, session_expr: str) -> s
             {session_expr} AS session,
             json_extract_string(payload, '$.kind') AS kind,
             payload,
-            '{fleet}' AS fleet
+            '{fleet}' AS fleet,
+            filename
         FROM read_json(
-            '{glob}',
+            {src},
             union_by_name = true,
             ignore_errors = true,
             filename = true,
             columns = {_COLUMNS}
         )"""
+
+
+_EV_COLS = "id, session_id, ts, daemon, session, kind, payload, fleet"
+
+
+def _configure(con: duckdb.DuckDBPyConnection) -> None:
+    os.makedirs(_SPILL_DIR, exist_ok=True)
+    con.execute(f"SET memory_limit = '{_MEMORY_LIMIT}'")
+    con.execute(f"SET threads = {_THREADS}")
+    con.execute(f"SET temp_directory = {_sql_str(_SPILL_DIR)}")
+
+
+def _source_files(srcs) -> dict[str, tuple[str, int, int]]:
+    """path -> (fleet, mtime_ns, size) for every file of every present source."""
+    out: dict[str, tuple[str, int, int]] = {}
+    for pattern, fleet, *_ in srcs:
+        for p in _glob.glob(pattern):
+            st = os.stat(p)
+            out[p] = (fleet, st.st_mtime_ns, st.st_size)
+    return out
+
+
+def _content_hash(path: str) -> str:
+    h = hashlib.blake2b(digest_size=16)
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def snapshot_refresh(srcs=None) -> dict:
+    """Bring the parquet snapshot up to date with the source JSONL, re-parsing
+    only changed files. Returns {"rebuilt", "parsed", "removed", "unchanged"}.
+
+    Change detection is two-tier: same mtime+size -> unchanged (no read); else
+    same size+content hash -> unchanged (cc emit rewrites every output file each
+    cycle, so mtimes alone would re-parse the whole cc side every 15 minutes);
+    else re-parse. Removed files' rows are dropped. The parquet is written to a
+    temp file and renamed, so readers always see a complete snapshot.
+    """
+    if srcs is None:
+        srcs = [s for s in _DEFAULT_SOURCES if _glob_has_files(s[0])]
+    current = _source_files(srcs)
+    have_snapshot = os.path.exists(_SNAPSHOT)
+    try:
+        with open(_MANIFEST, encoding="utf-8") as f:
+            manifest = json.load(f)
+    except (OSError, ValueError):
+        manifest = {}
+    if not have_snapshot:
+        manifest = {}  # no parquet to carry unchanged rows from — parse everything
+
+    changed: dict[str, str] = {}  # path -> fleet
+    hashes: dict[str, str] = {}
+    for p, (fleet, mtime_ns, size) in current.items():
+        m = manifest.get(p)
+        if m and m["mtime_ns"] == mtime_ns and m["size"] == size:
+            hashes[p] = m["hash"]
+            continue
+        digest = _content_hash(p)
+        hashes[p] = digest
+        if m and m["size"] == size and m["hash"] == digest:
+            continue  # rewritten with identical content — manifest mtime refreshes below
+        changed[p] = fleet
+    removed = [p for p in manifest if p not in current]
+
+    stats = {
+        "rebuilt": False,
+        "parsed": len(changed),
+        "removed": len(removed),
+        "unchanged": len(current) - len(changed),
+    }
+    if have_snapshot and not changed and not removed:
+        _write_manifest(current, hashes)  # refresh mtimes for rewritten-identical files
+        return stats
+
+    con = duckdb.connect()
+    _configure(con)
+    parts = []
+    if have_snapshot:
+        con.execute("CREATE TEMP TABLE _stale(path VARCHAR)")
+        con.executemany("INSERT INTO _stale VALUES (?)", [(p,) for p in [*changed, *removed]])
+        parts.append(
+            f"SELECT {_EV_COLS}, filename FROM read_parquet({_sql_str(_SNAPSHOT)}) "
+            "WHERE filename NOT IN (SELECT path FROM _stale)"
+        )
+    for pattern, fleet, daemon_expr, session_expr in srcs:
+        files = sorted(p for p, fl in changed.items() if fl == fleet)
+        if files:
+            parts.append(_select_for(pattern, fleet, daemon_expr, session_expr, files=files))
+    if not parts:  # no snapshot yet and nothing to parse — nothing to write
+        return stats
+
+    union = "\n        UNION ALL\n".join(parts)
+    tmp = f"{_SNAPSHOT}.tmp.{os.getpid()}"
+    os.makedirs(os.path.dirname(_SNAPSHOT), exist_ok=True)
+    con.execute(f"COPY ({union}) TO {_sql_str(tmp)} (FORMAT PARQUET, COMPRESSION ZSTD)")
+    os.replace(tmp, _SNAPSHOT)
+    _write_manifest(current, hashes)
+    stats["rebuilt"] = True
+    return stats
+
+
+def _write_manifest(current, hashes) -> None:
+    manifest = {
+        p: {"fleet": fleet, "mtime_ns": mtime_ns, "size": size, "hash": hashes[p]}
+        for p, (fleet, mtime_ns, size) in current.items()
+    }
+    tmp = f"{_MANIFEST}.tmp.{os.getpid()}"
+    os.makedirs(os.path.dirname(_MANIFEST), exist_ok=True)
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(manifest, f)
+    os.replace(tmp, _MANIFEST)
 
 
 def connect(
@@ -165,10 +300,7 @@ def connect(
         srcs = [s for s in _DEFAULT_SOURCES if _glob_has_files(s[0])]
 
     con = duckdb.connect()
-    os.makedirs(_SPILL_DIR, exist_ok=True)
-    con.execute(f"SET memory_limit = '{_MEMORY_LIMIT}'")
-    con.execute(f"SET threads = {_THREADS}")
-    con.execute(f"SET temp_directory = '{_SPILL_DIR}'")
+    _configure(con)
     if not srcs:
         # No event logs present anywhere — register an empty, correctly-typed view
         # so callers can query `ev` without a crash (returns zero rows).
@@ -182,14 +314,30 @@ def connect(
             _DEFAULT_CON = con
         return con
 
-    union = "\n        UNION ALL\n".join(_select_for(*s) for s in srcs)
-    con.execute(f"CREATE OR REPLACE VIEW ev AS{union}")
-    # The dashboard builds many independent panel slices from `ev`. Leaving `ev` as
-    # a read_json view makes each slice re-scan the same JSONL corpus; materializing
-    # once per connection turns refresh into "read event logs once, query many
-    # times". Per-process/temporary: each refresh step gets a fresh snapshot of
-    # whatever the compact steps wrote before it started.
-    con.execute("CREATE OR REPLACE TEMP TABLE _ev_materialized AS SELECT * FROM ev")
+    if default:
+        # Production: serve ev from the parquet snapshot — refreshed incrementally
+        # here (a no-op when nothing changed), scanned per query instead of
+        # materialized, so a consumer's footprint is its working set, not the
+        # corpus. Any snapshot failure (e.g. read-only checkout) falls back to
+        # the parse-and-materialize path below.
+        try:
+            snapshot_refresh(srcs)
+            if os.path.exists(_SNAPSHOT):
+                con.execute(
+                    f"CREATE OR REPLACE VIEW ev AS SELECT {_EV_COLS} "
+                    f"FROM read_parquet({_sql_str(_SNAPSHOT)})"
+                )
+                _DEFAULT_CON = con
+                return con
+        except Exception as e:
+            print(f"  warn: ev snapshot unavailable ({e}); parsing JSONL", file=sys.stderr)
+
+    # Explicit-source path (tests) and snapshot fallback: parse the JSONL and
+    # materialize once per connection so panel slices don't each re-scan it.
+    union = "\n        UNION ALL\n".join(_select_for(s[0], s[1], s[2], s[3]) for s in srcs)
+    con.execute(
+        f"CREATE OR REPLACE TEMP TABLE _ev_materialized AS SELECT {_EV_COLS} FROM ({union})"
+    )
     con.execute("CREATE OR REPLACE TEMP VIEW ev AS SELECT * FROM _ev_materialized")
     if default:
         _DEFAULT_CON = con
@@ -230,4 +378,11 @@ def smoke() -> None:
 
 
 if __name__ == "__main__":
-    smoke()
+    if len(sys.argv) > 1 and sys.argv[1] == "snapshot":
+        s = snapshot_refresh()
+        print(
+            f"ev snapshot: parsed {s['parsed']} changed, dropped {s['removed']} removed, "
+            f"{s['unchanged']} unchanged" + ("" if s["rebuilt"] else " (snapshot reused)")
+        )
+    else:
+        smoke()
