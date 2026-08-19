@@ -72,6 +72,9 @@ done
 # cc sink: re-emit all cc accounts -> events -> compact
 run_step "cc emit" "$here/run" cc_telemetry.py
 run_step "cc compact" "$mu" analytics compact --events-dir "$cc_events" --db "$cc_sink"
+# refresh the parquet ev snapshot now that both fleets' logs are current; the
+# engine-backed steps below then read it instead of each re-parsing the JSONL.
+run_step "ev snapshot" "$here/run" engine.py snapshot
 # fold any dashboard-exported marks (data/marks_inbox/*.jsonl) into marks.sqlite
 run_step "marks ingest" "$here/run" marks_store.py ingest
 # degradation probe + mu-audit findings -> the data the dashboard's degradation
