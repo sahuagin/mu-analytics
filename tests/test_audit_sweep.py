@@ -48,12 +48,18 @@ class TestAuditParse(unittest.TestCase):
         old = os.environ.pop("MU_ANALYTICS_AUDIT_WORKERS", None)
         try:
             self.assertEqual(a.audit_workers(0), 1)
-            self.assertGreaterEqual(a.audit_workers(100), 1)
-            self.assertLessEqual(a.audit_workers(100), 8)
+            # inject cpu_count so each term of min(24, n_files, cpu) is
+            # exercised regardless of the host's core count
+            self.assertEqual(a.audit_workers(100, cpu_count=32), 24)  # the cap binds
+            self.assertEqual(a.audit_workers(3, cpu_count=32), 3)  # n_files binds
+            self.assertEqual(a.audit_workers(100, cpu_count=4), 4)  # cpu binds
+            # uninjected: the test recomputes the formula from the real
+            # cpu_count, so code and test verify each other on any host
+            self.assertEqual(a.audit_workers(100), min(24, 100, os.cpu_count() or 4))
             os.environ["MU_ANALYTICS_AUDIT_WORKERS"] = "2"
             self.assertEqual(a.audit_workers(100), 2)
             os.environ["MU_ANALYTICS_AUDIT_WORKERS"] = "not-int"
-            self.assertLessEqual(a.audit_workers(100), 8)
+            self.assertEqual(a.audit_workers(100, cpu_count=32), 24)  # bad override -> formula
         finally:
             if old is None:
                 os.environ.pop("MU_ANALYTICS_AUDIT_WORKERS", None)

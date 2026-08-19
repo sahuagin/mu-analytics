@@ -93,18 +93,19 @@ def audit_file(path):
     ]
 
 
-def audit_workers(n_files):
+def audit_workers(n_files, cpu_count=None):
     """Bound the subprocess fan-out. The box has plenty of cores and `mu audit` is a
     short subprocess (threads release the GIL waiting on it), so scale with the CPU
     count — capped so a cold full sweep doesn't stampede the machine. Override with
-    MU_ANALYTICS_AUDIT_WORKERS."""
+    MU_ANALYTICS_AUDIT_WORKERS. cpu_count is injectable for tests; it defaults to
+    the host's."""
     override = os.environ.get("MU_ANALYTICS_AUDIT_WORKERS")
     if override:
         try:
             return max(1, int(override))
         except ValueError:
             pass
-    return max(1, min(24, n_files, (os.cpu_count() or 4)))
+    return max(1, min(24, n_files, cpu_count or os.cpu_count() or 4))
 
 
 def enumerate_logs(events_glob=EVENTS):
