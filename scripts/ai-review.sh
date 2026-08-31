@@ -9,8 +9,8 @@
 #   Primary 1 (local):  qwen3-coder-next-agent262k over ollama — 3-GPU local
 #                       agentic/code reviewer, 262k context, temp 0.6.
 #   Primary 2:          deepseek-v4-pro over openrouter — frontier-ish and cheap.
-#   Tiebreaker:         Claude over anthropic-api — invoked ONLY when the two
-#                       primaries disagree, so the Anthropic key/cost is reserved
+#   Tiebreaker:         Claude via claude-oauth (`claude -p`) — invoked ONLY when the two
+#                       primaries disagree, so the subscription lane is reserved
 #                       for actual ties.
 #
 # WHY THIS SHAPE: the previous panel ran two LOCAL models co-resident (qwen +
@@ -56,8 +56,8 @@
 #   Primary 2 (default openrouter / deepseek-v4-pro):
 #     MU_REVIEW_PROVIDER_2      provider (default: openrouter)
 #     MU_REVIEW_MODEL_2         model    (default: deepseek/deepseek-v4-pro)
-#   Tiebreaker (default anthropic-api / claude-sonnet-4-6; runs ONLY on a split):
-#     MU_REVIEW_PROVIDER_3      provider (default: anthropic-api)
+#   Tiebreaker (default claude-oauth / claude-sonnet-4-6; runs ONLY on a split):
+#     MU_REVIEW_PROVIDER_3      provider (default: claude-oauth -> native `claude -p`)
 #     MU_REVIEW_MODEL_3         model    (default: claude-sonnet-4-6)
 #     MU_REVIEW_FALLBACK_PROVIDER  hosted provider primary-1 falls back to when
 #                               the local ollama MODEL is NOT already resident
@@ -115,15 +115,16 @@ set -o pipefail
 # it has been the stronger local AGENTIC/code-exploration lane than gpt-oss.
 #
 # Primary 2 defaults to deepseek-v4-pro over openrouter — frontier-ish, cheap,
-# and independent of the local runner. Tiebreaker is Claude over anthropic-api,
-# invoked only on a primary split so the Anthropic key/cost is used as the final
+# and independent of the local runner. Tiebreaker is Claude via claude-oauth
+# (the native `claude -p` subscription lane — metered anthropic-api is dead by
+# operator decision), invoked only on a primary split so Claude is the final
 # adjudicator, not the routine second opinion.
 # Bench provenance: ~/src/public_github/code-review-bench/reports/NOTES.md.
 PROVIDER="${MU_REVIEW_PROVIDER:-ollama}"
 MODEL="${MU_REVIEW_MODEL:-qwen3-coder-next-agent262k}"
 PROVIDER2="${MU_REVIEW_PROVIDER_2:-openrouter}"
 MODEL2="${MU_REVIEW_MODEL_2:-deepseek/deepseek-v4-pro}"
-PROVIDER3="${MU_REVIEW_PROVIDER_3:-anthropic-api}"
+PROVIDER3="${MU_REVIEW_PROVIDER_3:-claude-oauth}"
 MODEL3="${MU_REVIEW_MODEL_3:-claude-sonnet-4-6}"
 # Hosted reviewer that primary-1 falls back to when the local ollama model
 # isn't safe to use (a DIFFERENT model is resident, or ollama is unreachable).
@@ -151,22 +152,19 @@ ERRLOG="${TMPDIR:-/tmp}/ai-review-stderr.$$"   # reviewer stderr kept (not disca
 
 # --- provider keys (mu-aireview-key-export-j4xoy) --------------------------
 # `mu ask` reads hosted-provider keys from the environment; its own auth store
-# holds only openai-codex creds. Without these exports the openrouter primary
-# and anthropic tiebreaker die with "API key not set", which the panel records
-# as an empty UNCLEAR — every run ESCALATEs on a phantom split with only the
-# codex seat live (observed 2026-08-31, PR #75's gate). Port of the mu repo's
-# review-panel/dispatch.sh export, plus the anthropic key because this script
-# calls `mu ask --provider anthropic-api` directly rather than routing claude
-# seats through the native CLI. Exported silently, never printed; a caller's
-# existing env wins; absent config entries leave the var unset so the seat's
-# error still names the real problem.
+# holds only openai-codex creds. Without this export the openrouter primary
+# dies with "API key not set", which the panel records as an empty UNCLEAR —
+# every run ESCALATEs on a phantom split with only the codex seat live
+# (observed 2026-08-31, PR #75's gate). Port of the mu repo's
+# review-panel/dispatch.sh export. Exported silently, never printed; a
+# caller's existing env wins; an absent config entry leaves the var unset so
+# the seat's error still names the real problem. ANTHROPIC_API_KEY is
+# deliberately NOT exported — metered anthropic-api is dead by operator
+# decision; claude seats run through `claude -p` (see run_review), which
+# scrubs the metered selectors instead.
 if [ -z "${OPENROUTER_API_KEY:-}" ]; then
   OPENROUTER_API_KEY="$(tq -f "$HOME/.config/agent/config.toml" -r openrouter.api_key 2>/dev/null)" || OPENROUTER_API_KEY=""
   [ -n "$OPENROUTER_API_KEY" ] && export OPENROUTER_API_KEY
-fi
-if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-  ANTHROPIC_API_KEY="$(tq -f "$HOME/.config/agent/config.toml" -r anthropic.api_key 2>/dev/null)" || ANTHROPIC_API_KEY=""
-  [ -n "$ANTHROPIC_API_KEY" ] && export ANTHROPIC_API_KEY
 fi
 
 if [ -t 1 ] && [ -z "${MU_REVIEW_NO_COLOR:-}" ]; then
@@ -320,6 +318,22 @@ run_review() { # $1=provider $2=model [$3=prompt-file, default $PROMPT_FILE] —
   # is missing). Replaces the MU_NO_RECALL=1 env spelling from #185.
   # shellcheck disable=SC2086 — $SYS_FLAGS intentionally word-splits
   local PF="${3:-$PROMPT_FILE}"   # chunked mode passes leaf/synthesis prompt files
+  if [ "$1" = "claude-oauth" ]; then
+    # Native subscription lane, mirroring the mu repo's agent-dispatch.sh
+    # claude lane (metered anthropic-api is dead by operator decision — there
+    # is no ANTHROPIC_API_KEY). Scrub the metered selectors so a key/base-url
+    # leaked from the calling shell cannot flip the CLI to per-token billing
+    # (the mu-odtc trap). TOOLS is mu-ask vocabulary and the tiebreaker is
+    # single-shot; if set it is ignored here, noted in the errlog.
+    local CLSYS=""
+    [ -r "$SYSPROMPT" ] && CLSYS="--append-system-prompt-file $SYSPROMPT"
+    [ -n "$TOOLS" ] && echo "run_review: TOOLS ignored on claude-oauth seat (single-shot)" >>"$ERRLOG"
+    timeout "$TIMEOUT" env -u ANTHROPIC_API_KEY -u ANTHROPIC_BASE_URL \
+      claude -p --model "$2" $CLSYS \
+      --exclude-dynamic-system-prompt-sections \
+      --output-format text <"$PF" 2>>"$ERRLOG"
+    return
+  fi
   SYS_FLAGS=""
   [ -r "$SYSPROMPT" ] && SYS_FLAGS="--append-system-prompt $SYSPROMPT"
   if [ -n "$TOOLS" ]; then
