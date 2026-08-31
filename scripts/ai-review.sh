@@ -149,6 +149,26 @@ LOG="${MU_REVIEW_LOG:-$HOME/.local/share/mu/review-events.jsonl}"
 SYSPROMPT="${MU_REVIEW_SYSTEM_PROMPT:-$(dirname "$0")/ai-review-system-prompt.txt}"
 ERRLOG="${TMPDIR:-/tmp}/ai-review-stderr.$$"   # reviewer stderr kept (not discarded) so silent failures (e.g. provider auth) are diagnosable
 
+# --- provider keys (mu-aireview-key-export-j4xoy) --------------------------
+# `mu ask` reads hosted-provider keys from the environment; its own auth store
+# holds only openai-codex creds. Without these exports the openrouter primary
+# and anthropic tiebreaker die with "API key not set", which the panel records
+# as an empty UNCLEAR — every run ESCALATEs on a phantom split with only the
+# codex seat live (observed 2026-08-31, PR #75's gate). Port of the mu repo's
+# review-panel/dispatch.sh export, plus the anthropic key because this script
+# calls `mu ask --provider anthropic-api` directly rather than routing claude
+# seats through the native CLI. Exported silently, never printed; a caller's
+# existing env wins; absent config entries leave the var unset so the seat's
+# error still names the real problem.
+if [ -z "${OPENROUTER_API_KEY:-}" ]; then
+  OPENROUTER_API_KEY="$(tq -f "$HOME/.config/agent/config.toml" -r openrouter.api_key 2>/dev/null)" || OPENROUTER_API_KEY=""
+  [ -n "$OPENROUTER_API_KEY" ] && export OPENROUTER_API_KEY
+fi
+if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+  ANTHROPIC_API_KEY="$(tq -f "$HOME/.config/agent/config.toml" -r anthropic.api_key 2>/dev/null)" || ANTHROPIC_API_KEY=""
+  [ -n "$ANTHROPIC_API_KEY" ] && export ANTHROPIC_API_KEY
+fi
+
 if [ -t 1 ] && [ -z "${MU_REVIEW_NO_COLOR:-}" ]; then
   C_RED=$'\033[31m'; C_GREEN=$'\033[32m'; C_YEL=$'\033[33m'; C_DIM=$'\033[2m'; C_OFF=$'\033[0m'
 else
