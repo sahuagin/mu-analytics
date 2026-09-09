@@ -104,12 +104,14 @@ build-parsers: build-anthropic-parser build-events-parser
 
 # ── deploy ─────────────────────────────────────────────────────────────────
 
-# Host running the dashboard cron (see "Deployment" in the README).
+# Host running the dashboard cron (see "Deployment" in the README), and the
+# checkout on it (expanded by the ssh login shell, so ~ is fine).
 deploy_host := env_var_or_default("MU_ANALYTICS_HOST", "10.1.1.172")
+deploy_repo := env_var_or_default("MU_ANALYTICS_REPO", "~/src/public_github/mu-analytics")
 
-# Deploy a merge: SSH with agent forwarding (-A) so the host wrapper can fetch with YOUR keys (none stored on the host), then sync to main + regenerate. See README → Deployment.
+# Deploy a merge: SSH with agent forwarding (-A) so the host can fetch with YOUR keys (none stored on the host), and fast-forward the checkout to main@origin under the refresh lock. Ships code only — cron regenerates on its own clock. See README → Deployment.
 deploy:
-    ssh -A {{deploy_host}} /home/tcovert/mu-stats/mu-analytics-refresh.sh
+    ssh -A {{deploy_host}} '{{deploy_repo}}/ops/refresh-cron.sh --sync-only'
 
 # ── PR flow (jj-aware) ─────────────────────────────────────────────────────
 
