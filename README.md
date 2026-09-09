@@ -193,11 +193,15 @@ No system install / no pip — `cc_telemetry.py` adds `lib/` to `sys.path` itsel
 Runs on the analytics host (default `10.1.1.172`). Two separate things happen
 there — **regenerate** is automatic; **deploy** (pulling new code) is deliberate.
 
-- **Regenerate (cron, automatic).** A wrapper (`~/mu-stats/mu-analytics-refresh.sh`;
-  versioned copy at `ops/refresh-cron.sh`) runs every 15 min and rebuilds the
+- **Regenerate (cron, automatic).** The wrapper `ops/refresh-cron.sh` (point the
+  crontab line at it inside the checkout) runs every 15 min and rebuilds the
   dashboard — `refresh.sh` → `gen_dashboard.py` → `dist/`, served by nginx — off
   **whatever is currently checked out**. Cron has **no GitHub auth** (by design —
   no keys live on the host), so it does **not** pull new code; it only re-renders.
+  Its first step is the relay `ops/ai-sessions-sync`: the local rsync that
+  consolidates every machine's session logs into `~/ai-sessions` (pairs from
+  `~/.config/ai-sessions-sync.conf`). The wrapper prefers that versioned copy over
+  an `ai-sessions-sync` on PATH, so relay flag changes ship with the checkout.
 - **Deploy (manual).** To ship a merge, run `just deploy` (or, on the host,
   `jj git fetch && jj new main@origin`) **with your ssh-agent forwarded**. The
   wrapper then fast-forwards the checkout to `main@origin` when clean (a dirty dev
