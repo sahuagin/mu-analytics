@@ -50,9 +50,14 @@ if [ -z "${MU_ANALYTICS_CRON_LOCKED:-}" ]; then
 fi
 
 # Relay live claude-code + mu logs into ~/ai-sessions BEFORE the dashboard reads
-# them, so the page never renders a stale archive. Host-specific and non-fatal:
-# skipped where the relay isn't installed; a hiccup must not block the refresh.
-if command -v ai-sessions-sync >/dev/null 2>&1; then
+# them, so the page never renders a stale archive. Prefer the versioned relay
+# next to this wrapper (ops/ai-sessions-sync) so its rsync flags ship with the
+# checkout; fall back to one on PATH. Non-fatal and skipped where neither
+# exists: a relay hiccup must not block the refresh.
+relay="$script_dir/ai-sessions-sync"
+if [ -x "$relay" ]; then
+    "$relay" >> "$state/ai-sessions-sync.log" 2>&1 || true
+elif command -v ai-sessions-sync >/dev/null 2>&1; then
     ai-sessions-sync >> "$state/ai-sessions-sync.log" 2>&1 || true
 fi
 

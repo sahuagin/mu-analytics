@@ -1,0 +1,77 @@
+#!/bin/sh
+# ai-sessions-sync — relay live claude-code + mu session logs into the
+# consolidated ~/ai-sessions archive that mu-analytics reads.
+#
+# Versioned copy of the host relay: ops/refresh-cron.sh runs THIS file when it
+# sits next to it, else whatever `ai-sessions-sync` is on PATH. Source|dest
+# pairs come from the config (default ~/.config/ai-sessions-sync.conf; one
+# `src|dst` per line, '#' and blanks ignored). Every source is a LOCAL path —
+# the jails' filesystems are mounted on the archive host — so this is plain
+# local rsync, no SSH/network. NO --delete: the archive retains sessions even
+# if a source rotates them out.
+#
+# rsync flags ($rsync_opts):
+#   -a         recurse + preserve; a file is "changed" by size+mtime only (rsync's
+#              default quick check — no checksum pass).
+#   -W         copy a changed file whole instead of delta-transferring it. Local
+#              paths already default to this; explicit so a remote dest can never
+#              silently switch on the CPU-heavy delta algorithm.
+#   --no-i-r   build each pair's file list in one pass (no incremental recursion).
+#   no -z      compression buys nothing on a local copy and costs CPU.
+#
+# Idempotent; safe to run from cron at any cadence — a pidfile prevents overlap.
+#
+# Usage:  ai-sessions-sync            # uses $AI_SESSIONS_SYNC_CONF or the default
+#         AI_SESSIONS_SYNC_CONF=/path/to.conf ai-sessions-sync
+set -u
+
+conf="${AI_SESSIONS_SYNC_CONF:-$HOME/.config/ai-sessions-sync.conf}"
+rsync=/usr/local/bin/rsync
+rsync_opts="-aW --no-i-r"
+ts() { date '+%Y-%m-%d %H:%M:%S'; }
+
+[ -f "$conf" ] || { echo "[$(ts)] ai-sessions-sync: no config at $conf" >&2; exit 1; }
+[ -x "$rsync" ] || { echo "[$(ts)] ai-sessions-sync: rsync not found at $rsync" >&2; exit 1; }
+
+pidfile="${TMPDIR:-/tmp}/ai-sessions-sync.pid"
+if [ -f "$pidfile" ]; then
+  oldpid=$(cat "$pidfile" 2>/dev/null || true)
+  if [ -n "${oldpid:-}" ] && kill -0 "$oldpid" 2>/dev/null; then
+    echo "[$(ts)] ai-sessions-sync: previous run still active (pid $oldpid) — skip"
+    exit 0
+  fi
+fi
+printf '%s\n' "$$" > "$pidfile"
+trap 'rm -f "$pidfile"' EXIT HUP INT TERM
+
+n_ok=0 n_skip=0 n_err=0
+echo "[$(ts)] ai-sessions-sync start ($conf)"
+while IFS='|' read -r src dst; do
+  case "$src" in ''|\#*) continue ;; esac                       # skip blanks/comments
+  src=$(printf '%s' "$src" | sed 's/[[:space:]]*$//')           # trim trailing ws
+  dst=$(printf '%s' "$dst" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  if [ -z "$dst" ]; then
+    echo "  ERR (no dest): $src"; n_err=$((n_err + 1)); continue
+  fi
+  if [ ! -e "$src" ]; then
+    echo "  skip (source missing): $src"; n_skip=$((n_skip + 1)); continue
+  fi
+  if [ -d "$src" ]; then
+    mkdir -p "$dst"
+    # trailing slash: copy the CONTENTS of src into dst (not src itself nested)
+    if "$rsync" $rsync_opts "$src/" "$dst/"; then
+      echo "  ok: $src/ -> $dst/"; n_ok=$((n_ok + 1))
+    else
+      echo "  ERR (rsync $?): $src/ -> $dst/"; n_err=$((n_err + 1))
+    fi
+  else
+    mkdir -p "$(dirname "$dst")"
+    if "$rsync" $rsync_opts "$src" "$dst"; then
+      echo "  ok: $src -> $dst"; n_ok=$((n_ok + 1))
+    else
+      echo "  ERR (rsync $?): $src -> $dst"; n_err=$((n_err + 1))
+    fi
+  fi
+done < "$conf"
+echo "[$(ts)] ai-sessions-sync done: $n_ok ok, $n_skip skipped, $n_err errors"
+[ "$n_err" -eq 0 ]
