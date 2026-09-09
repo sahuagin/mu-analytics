@@ -27,7 +27,10 @@ case "${1:-}" in --sync-only) sync_only=1 ;; esac
 
 # Self-locate the checkout (this script lives at <repo>/ops/refresh-cron.sh) so
 # the wrapper isn't pinned to one host's path; MU_ANALYTICS_REPO overrides.
-script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+# Resolve symlinks first: a crontab may point at a link elsewhere (e.g. the old
+# ~/mu-stats wrapper path), and $0 is the link, not the file.
+self=$(readlink -f -- "$0" 2>/dev/null || realpath -- "$0" 2>/dev/null || printf '%s' "$0")
+script_dir=$(CDPATH= cd -- "$(dirname -- "$self")" && pwd)
 repo="${MU_ANALYTICS_REPO:-$(cd "$script_dir/.." && pwd)}"
 state="${MU_ANALYTICS_STATE:-$HOME/mu-stats}"
 mkdir -p "$state"
