@@ -202,12 +202,14 @@ there — **regenerate** is automatic; **deploy** (pulling new code) is delibera
   consolidates every machine's session logs into `~/ai-sessions` (pairs from
   `~/.config/ai-sessions-sync.conf`). The wrapper prefers that versioned copy over
   an `ai-sessions-sync` on PATH, so relay flag changes ship with the checkout.
-- **Deploy (manual).** To ship a merge, run `just deploy` (or, on the host,
-  `jj git fetch && jj new main@origin`) **with your ssh-agent forwarded**. The
-  wrapper then fast-forwards the checkout to `main@origin` when clean (a dirty dev
-  tree is left untouched, never clobbered) and regenerates. Your keys stay on your
-  machine — agent forwarding, nothing stored on the host. Override the host with
-  `MU_ANALYTICS_HOST`.
+- **Deploy (manual).** To ship a merge, run `just deploy` **with your ssh-agent
+  forwarded**. It runs `ops/refresh-cron.sh --sync-only` on the host: waits for a
+  running refresh cycle to finish (same lock), fast-forwards the checkout to
+  `main@origin` when clean (a dirty dev tree is left untouched, never clobbered),
+  prints what it did, and exits. It ships code only — the next cron cycle
+  regenerates on the new code. Your keys stay on your machine — agent forwarding,
+  nothing stored on the host. Override the host with `MU_ANALYTICS_HOST`, the
+  checkout path with `MU_ANALYTICS_REPO`.
 
 So **merging to `main` does not auto-deploy** — it's a deliberate `just deploy`.
 After that, cron keeps the freshly-synced dashboard re-rendered.
