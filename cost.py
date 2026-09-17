@@ -7,7 +7,10 @@ cost = rate x actual tokens, and rolls up by fleet/model.
 
 Discipline: unlisted models are FLAGGED, never silently priced. Cache-write
 uses the legacy 1.25x on total (the sink drops the 5m/1h split) — see the
-config note; cache-read (0.10x) dominates cache cost anyway.
+config note; cache-read (0.10x) dominates cache cost anyway. Fresh input is
+provider-aware ([cache_in_input]): OpenAI's prompt total includes its cached
+subset, so cached tokens are taken out before the input rate applies
+(mu-hx0ta); the formula is the same one sample_data.priced_cost uses.
 
 Run via the launcher so it gets the pkg python that has polars:
     ./run cost.py
@@ -24,13 +27,15 @@ cfg = tomllib.load(open(os.path.join(HERE, "config.toml"), "rb"))
 RATES = cfg["rates"]
 MULT = cfg["cache_multipliers"]
 PATHS = cfg["paths"]
+CACHE_IN_INPUT = {k.lower(): bool(v) for k, v in cfg.get("cache_in_input", {}).items()}
 
 COLS = (
     "SELECT provider, model, exit_reason, outcome_class, "
     "COALESCE(prompt_tokens,0)     AS input_tok, "
     "COALESCE(completion_tokens,0) AS output_tok, "
     "COALESCE(cache_read_tokens,0) AS cache_read, "
-    "COALESCE(cache_write_tokens,0) AS cache_write "
+    "COALESCE(cache_write_tokens,0) AS cache_write, "
+    "{cost_col} AS producer_cost "
     "FROM tasks"
 )
 
@@ -76,10 +81,18 @@ def load_sink(label: str, db: str):
     try:
         con = sqlite3.connect(db)
         con.row_factory = sqlite3.Row
+        # the producer's per-call cost (tasks.cost_usd, mu-hx0ta) when the
+        # sink has the column; older sinks price every task from totals
+        has_cost = any(c[1] == "cost_usd" for c in con.execute("PRAGMA table_info(tasks)"))
+        query = COLS.format(cost_col="cost_usd" if has_cost else "NULL")
         rows = [
             dict(r)
-            | {"rate_key": rate_key(r["model"]), "cost_kind": cost_kind(r["provider"], r["model"])}
-            for r in con.execute(COLS)
+            | {
+                "rate_key": rate_key(r["model"]),
+                "cost_kind": cost_kind(r["provider"], r["model"]),
+                "cache_in_input": CACHE_IN_INPUT.get((r["provider"] or "").lower(), False),
+            }
+            for r in con.execute(query)
         ]
     except sqlite3.OperationalError:
         return None
@@ -108,15 +121,27 @@ rates_df = pl.DataFrame(
 )
 df = df.join(rates_df, on="rate_key", how="left")
 unpriced = df.filter(pl.col("in_rate").is_null())
+# Fresh input: the reported input for disjoint-bucket providers, input minus
+# the cached subset where the provider counts cache inside input (mu-hx0ta).
+df = df.with_columns(
+    pl.when(pl.col("cache_in_input"))
+    .then((pl.col("input_tok") - pl.col("cache_read") - pl.col("cache_write")).clip(lower_bound=0))
+    .otherwise(pl.col("input_tok"))
+    .alias("fresh_tok")
+)
+# The producer's per-call figure wins where the sink carries it (the only
+# place a per-request pricing tier is exact); the rate card on totals is the
+# base-rate fallback for tasks compacted before mu-hx0ta.
 priced = df.filter(pl.col("in_rate").is_not_null()).with_columns(
-    (
+    pl.coalesce(
+        pl.col("producer_cost").cast(pl.Float64),
         (
-            pl.col("input_tok") * pl.col("in_rate")
+            pl.col("fresh_tok") * pl.col("in_rate")
             + pl.col("cache_write") * pl.col("in_rate") * MULT["write_5m"]
             + pl.col("cache_read") * pl.col("in_rate") * MULT["read"]
             + pl.col("output_tok") * pl.col("out_rate")
         )
-        / 1_000_000
+        / 1_000_000,
     ).alias("cost_usd")
 )
 
@@ -153,21 +178,30 @@ if len(unpriced):
 top = priced.sort("cost_usd", descending=True).row(0, named=True)
 ir, orr = top["in_rate"], top["out_rate"]
 manual = (
-    top["input_tok"] * ir
+    top["fresh_tok"] * ir
     + top["cache_write"] * ir * MULT["write_5m"]
     + top["cache_read"] * ir * MULT["read"]
     + top["output_tok"] * orr
 ) / 1_000_000
 print("\n=== hand-check (most expensive session) ===")
 print(
-    f"model={top['model']}  input={top['input_tok']}  output={top['output_tok']}  "
+    f"model={top['model']}  input={top['input_tok']} (fresh {top['fresh_tok']}, "
+    f"cache_in_input={top['cache_in_input']})  output={top['output_tok']}  "
     f"cache_read={top['cache_read']}  cache_write={top['cache_write']}"
 )
 print(
-    f"  ({top['input_tok']}*{ir} + {top['cache_write']}*{ir}*{MULT['write_5m']} "
+    f"  ({top['fresh_tok']}*{ir} + {top['cache_write']}*{ir}*{MULT['write_5m']} "
     f"+ {top['cache_read']}*{ir}*{MULT['read']} + {top['output_tok']}*{orr}) / 1e6"
 )
-print(
-    f"  manual = ${manual:,.4f}   polars = ${top['cost_usd']:,.4f}   "
-    f"match = {abs(manual - top['cost_usd']) < 1e-6}"
-)
+if top["producer_cost"] is not None:
+    # the producer priced this task per call; the rate card on totals is the
+    # base-rate figure it would have been (equal unless a request crossed a tier)
+    print(
+        f"  producer (per call) = ${top['cost_usd']:,.4f}   rate card on totals = ${manual:,.4f}   "
+        f"tier surcharge = ${top['cost_usd'] - manual:,.4f}"
+    )
+else:
+    print(
+        f"  manual = ${manual:,.4f}   polars = ${top['cost_usd']:,.4f}   "
+        f"match = {abs(manual - top['cost_usd']) < 1e-6}"
+    )

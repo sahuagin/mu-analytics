@@ -9,15 +9,17 @@ import sys
 import tempfile
 import unittest
 from datetime import UTC, datetime
+from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import engine  # noqa: E402
 import features  # noqa: E402
+import sample_data  # noqa: E402
 
 # 2026-06-15 13:00:00 UTC is a Monday → hour=13, weekday=0.
 _T0 = int(datetime(2026, 6, 15, 13, 0, 0, tzinfo=UTC).timestamp() * 1000)
-PRICED_MODEL = next(iter(features.RATES))  # a model that exists in the rate table
+PRICED_MODEL = next(iter(sample_data.RATES))  # a model that exists in the rate table
 
 
 def _ev(i, kind, payload, ts=None):
@@ -95,8 +97,41 @@ class TestSessionFeatures(unittest.TestCase):
         self.assertEqual(r["hour_of_day"], 13)
         self.assertEqual(r["day_of_week"], 0)
         # cost matches the config rate formula exactly
-        self.assertEqual(r["cost_usd"], features.price(PRICED_MODEL, 1000, 200, 500, 100))
+        self.assertEqual(
+            r["cost_usd"], features.price(PRICED_MODEL, 1000, 200, 500, 100, provider="anthropic")
+        )
         self.assertGreater(r["cost_usd"], 0)
+
+    def test_openai_provider_prices_cached_tokens_as_a_subset_via_price(self):
+        # the cache-in-input branch, exercised through features.price rather
+        # than sample_data directly: 1000 prompt with 500 cached and 100
+        # written on gpt-6-astra is 400 fresh x $10 + 100 x $12.5 + 500 x $1,
+        # not 1000 x $10 + 100 x $12.5 + 500 x $1 (reads AND writes are inside
+        # the OpenAI prompt total)
+        got = features.price("gpt-6-astra", 1000, 200, 500, 100, provider="openai_codex")
+        rr = sample_data.RATES["gpt-6-astra"]
+        want = round(
+            (
+                400 * rr["input"]
+                + 100 * rr["input"] * 1.25
+                + 500 * rr["input"] * 0.10
+                + 200 * rr["output"]
+            )
+            / 1e6,
+            4,
+        )
+        self.assertEqual(got, want)
+        # the composition components sum to the same figure, so the pie and
+        # the total agree for a cache-in-input provider
+        comp = sample_data.cost_components("openai_codex", "gpt-6-astra", 1000, 200, 500, 100)
+        self.assertAlmostEqual(round(sum(comp.values()), 4), got)
+        self.assertAlmostEqual(comp["input"], 400 * rr["input"] / 1e6)
+        # an old five-positional call fails loudly at the call site (the type
+        # checker would reject it statically; this pins the runtime behaviour
+        # for an untyped caller)
+        old_style_call: Any = features.price
+        with self.assertRaises(TypeError):
+            old_style_call("gpt-6-astra", 1000, 200, 500, 100)
 
     def test_dashboard_noise_model_is_excluded(self):
         with tempfile.TemporaryDirectory() as tmp:

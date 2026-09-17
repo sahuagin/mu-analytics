@@ -30,6 +30,9 @@ if not os.path.exists(_CFG_PATH):
 _cfg = tomllib.load(open(_CFG_PATH, "rb"))
 RATES, MULT, PATHS = _cfg["rates"], _cfg["cache_multipliers"], _cfg["paths"]
 CKP = {k.lower(): v for k, v in _cfg.get("cost_kind", {}).get("provider", {}).items()}
+# [cache_in_input]: providers whose reported prompt tokens INCLUDE the cached
+# subset (OpenAI); everyone else reports disjoint buckets (Anthropic). mu-hx0ta.
+CACHE_IN_INPUT = {k.lower(): bool(v) for k, v in _cfg.get("cache_in_input", {}).items()}
 CKM = {k.lower(): v for k, v in _cfg.get("cost_kind", {}).get("model", {}).items()}
 _KEYS = sorted(RATES.keys(), key=len, reverse=True)
 _PRE = ("anthropic/", "google/", "openai/", "openrouter/", "deepseek/", "x-ai/")
@@ -44,6 +47,47 @@ def _is_dashboard_noise(row):
     local/free real model work remains visible.
     """
     return (row.get("model") or "").lower() == "faux"
+
+
+def cache_in_input(provider):
+    return CACHE_IN_INPUT.get((provider or "").lower(), False)
+
+
+def cost_components(provider, model, input_tok, output_tok, cache_read_tok, cache_write_tok):
+    """The four USD components of one session's cost, unrounded, or None for
+    an unlisted model. The ONE cost formula for the dashboard (features.price,
+    cost.py, _load and the composition pie all derive from it):
+
+        fresh_input x in, cache_write x in x write_5m, cache_read x in x read,
+        output x out — each / 1e6
+
+    where fresh_input is the reported input for a disjoint-bucket provider
+    (Anthropic) and input - cache_read - cache_write for a provider that
+    counts both its cached and its written tokens inside the prompt total
+    (OpenAI; see [cache_in_input]), never negative — a written token bills
+    once, at the write modifier, never also as fresh input. A subscription lane's figure is API-equivalent, not money paid
+    — that is cost_kind's job to label."""
+    rr = RATES.get(rate_key(model))
+    if not rr:
+        return None
+    fresh = input_tok
+    if cache_in_input(provider):
+        fresh = max(input_tok - cache_read_tok - cache_write_tok, 0)
+    return {
+        "input": fresh * rr["input"] / 1e6,
+        "output": output_tok * rr["output"] / 1e6,
+        "cache_read": cache_read_tok * rr["input"] * MULT["read"] / 1e6,
+        "cache_write": cache_write_tok * rr["input"] * MULT["write_5m"] / 1e6,
+    }
+
+
+def priced_cost(provider, model, input_tok, output_tok, cache_read_tok, cache_write_tok):
+    """cost_usd (4 dp) from cost_components, or 0.0 for an unlisted model
+    (flagged by callers, never silently guessed)."""
+    comp = cost_components(provider, model, input_tok, output_tok, cache_read_tok, cache_write_tok)
+    if comp is None:
+        return 0.0
+    return round(sum(comp.values()), 4)
 
 
 def rate_key(m):
@@ -73,19 +117,40 @@ def _day(ms):
     return datetime.datetime.fromtimestamp((ms or 0) / 1000, tz=datetime.UTC).strftime("%Y-%m-%d")
 
 
+def _has_column(con, table, column):
+    return any(r[1] == column for r in con.execute(f"PRAGMA table_info({table})"))
+
+
+def task_cost(row):
+    """One task's cost: the producer's per-call figure (tasks.cost_usd, mu-hx0ta)
+    when the sink has it, else the rate card on the task's totals. The producer
+    priced each model call while the call sizes were known, which is the only
+    place a per-request pricing tier (gpt-6-astra: 2x input/cache and 1.5x
+    output on any request over 272k prompt tokens) can be applied; totals have
+    lost the request boundaries, so the rate-card fallback is the base rate."""
+    producer = row.get("cost_usd")
+    if producer is not None:
+        return round(float(producer), 4)
+    return priced_cost(row["provider"], row["model"], row["inp"], row["out"], row["cr"], row["cw"])
+
+
 def _load(label, db):
     if not os.path.exists(db):
         return []
     try:
         con = sqlite3.connect(db)
         con.row_factory = sqlite3.Row
+        # cost_usd arrived with mu-hx0ta; a sink compacted by an older mu
+        # has no column and every task prices from its totals
+        cost_col = "cost_usd" if _has_column(con, "tasks", "cost_usd") else "NULL AS cost_usd"
         rows = [
             dict(r)
             for r in con.execute(
                 "SELECT task_id, session_id, provider, model, exit_reason, outcome_class, "
                 "COALESCE(tool_call_count,0) tools, COALESCE(prompt_tokens,0) inp, "
                 "COALESCE(completion_tokens,0) out, COALESCE(cache_read_tokens,0) cr, "
-                "COALESCE(cache_write_tokens,0) cw, started_at_unix_ms, ended_at_unix_ms FROM tasks"
+                f"COALESCE(cache_write_tokens,0) cw, started_at_unix_ms, ended_at_unix_ms, {cost_col} "
+                "FROM tasks"
             )
         ]
     except sqlite3.OperationalError:
@@ -97,21 +162,7 @@ def _load(label, db):
             pass
     for r in rows:
         r["fleet"] = label
-        rr = RATES.get(rate_key(r["model"]))
-        r["cost"] = (
-            round(
-                (
-                    r["inp"] * rr["input"]
-                    + r["cw"] * rr["input"] * MULT["write_5m"]
-                    + r["cr"] * rr["input"] * MULT["read"]
-                    + r["out"] * rr["output"]
-                )
-                / 1e6,
-                4,
-            )
-            if rr
-            else 0.0
-        )
+        r["cost"] = task_cost(r)
         r["kind"] = cost_kind(r["provider"], r["model"])
     return rows
 
@@ -281,12 +332,14 @@ def _build_sink(mu_session_map=None, marks_by_session=None):
 
     top = sorted(rows, key=lambda r: -r["cost"])[:8]
     t = top[0]
-    trr = RATES.get(rate_key(t["model"])) or {"input": 0, "output": 0}
+    # the composition pie uses the same components as the session's cost, so
+    # the slices sum to the total for every provider kind (mu-hx0ta)
     comp = {
-        "input": round(t["inp"] * trr["input"] / 1e6, 2),
-        "output": round(t["out"] * trr["output"] / 1e6, 2),
-        "cache_read": round(t["cr"] * trr["input"] * MULT["read"] / 1e6, 2),
-        "cache_write": round(t["cw"] * trr["input"] * MULT["write_5m"] / 1e6, 2),
+        k: round(v, 2)
+        for k, v in (
+            cost_components(t["provider"], t["model"], t["inp"], t["out"], t["cr"], t["cw"])
+            or {"input": 0.0, "output": 0.0, "cache_read": 0.0, "cache_write": 0.0}
+        ).items()
     }
 
     def session_row(r):
