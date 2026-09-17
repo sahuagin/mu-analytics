@@ -20,7 +20,14 @@ import engine
 
 # Config-driven pricing (import-safe: sample_data guards its pipeline behind
 # __main__). RATES/MULT come from config.toml [rates]/[cache_multipliers].
-from sample_data import MULT, RATES, _is_dashboard_noise, cost_kind, rate_key
+from sample_data import (  # noqa: F401  (RATES/MULT/rate_key re-exported for callers)
+    MULT,
+    RATES,
+    _is_dashboard_noise,
+    cost_kind,
+    priced_cost,
+    rate_key,
+)
 
 # One query, the whole backbone. Everything is in the ev view:
 #   task_telemetry -> tokens + model + provider + started_at (the cost backbone)
@@ -107,22 +114,13 @@ NUMERIC = [
 ]
 
 
-def price(model, input_tok, output_tok, cache_read_tok, cache_write_tok):
-    """cost_usd from the config rate table (same formula as sample_data._load);
-    unlisted models price to 0.0 (flagged, never silently guessed)."""
-    rr = RATES.get(rate_key(model))
-    if not rr:
-        return 0.0
-    return round(
-        (
-            input_tok * rr["input"]
-            + cache_write_tok * rr["input"] * MULT["write_5m"]
-            + cache_read_tok * rr["input"] * MULT["read"]
-            + output_tok * rr["output"]
-        )
-        / 1e6,
-        4,
-    )
+def price(model, input_tok, output_tok, cache_read_tok, cache_write_tok, *, provider):
+    """cost_usd via sample_data.priced_cost — the one formula, provider-aware
+    (OpenAI counts cached tokens inside its prompt total; mu-hx0ta). `provider`
+    is keyword-only so a caller still on the old five-positional signature
+    fails here with a TypeError naming the missing argument, not inside
+    rate_key. Unlisted models price to 0.0 (flagged, never silently guessed)."""
+    return priced_cost(provider, model, input_tok, output_tok, cache_read_tok, cache_write_tok)
 
 
 def session_features(con):
@@ -140,7 +138,12 @@ def session_features(con):
         d["hour_of_day"] = dt.hour if dt else 0
         d["day_of_week"] = dt.weekday() if dt else 0  # 0=Mon (consistent; encoding-only)
         d["cost_usd"] = price(
-            d["model"], d["input_tok"], d["output_tok"], d["cache_read_tok"], d["cache_write_tok"]
+            d["model"],
+            d["input_tok"],
+            d["output_tok"],
+            d["cache_read_tok"],
+            d["cache_write_tok"],
+            provider=d["provider"],
         )
         d["cost_kind"] = cost_kind(d["provider"], d["model"])
         if _is_dashboard_noise({"model": d["model"], "kind": d["cost_kind"]}):

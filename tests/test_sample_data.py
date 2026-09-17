@@ -58,6 +58,133 @@ class TestPureFns(unittest.TestCase):
         self.assertEqual(sample_data.cost_kind("openai_codex", "gpt-5.5"), "subscription")
         self.assertEqual(sample_data.cost_kind("", ""), "free")  # empty model is free
 
+    def test_cached_input_is_a_subset_for_openai_and_disjoint_for_anthropic(self):
+        # mu-hx0ta: OpenAI reports prompt_tokens as the whole prompt with the
+        # cached tokens inside it; Anthropic reports disjoint buckets. The same
+        # numbers must price differently, and the OpenAI cached token at 0.10x
+        # of the input rate, not 1.10x (the mu #626 board finding).
+        self.assertTrue(sample_data.cache_in_input("openai_codex"))
+        self.assertTrue(sample_data.cache_in_input("openai_api"))
+        self.assertFalse(sample_data.cache_in_input("anthropic_api"))
+        self.assertFalse(sample_data.cache_in_input("nobody"))
+        gpt = sample_data.RATES["gpt-6-astra"]
+        # 55,577 prompt of which 37,632 cached, 1,200 out:
+        # fresh 17,945 x $10 + cached 37,632 x $1 + out 1,200 x $50 = $0.2771
+        got = sample_data.priced_cost("openai_codex", "gpt-6-astra", 55_577, 1_200, 37_632, 0)
+        self.assertAlmostEqual(
+            got,
+            round(
+                (17_945 * gpt["input"] + 37_632 * gpt["input"] * 0.10 + 1_200 * gpt["output"])
+                / 1e6,
+                4,
+            ),
+        )
+        self.assertAlmostEqual(got, 0.2771, places=4)
+        # the Anthropic rule on an Anthropic card prices the input in full
+        opus = sample_data.RATES["claude-opus-4-8"]
+        got_a = sample_data.priced_cost(
+            "anthropic_api", "claude-opus-4-8", 55_577, 1_200, 37_632, 0
+        )
+        self.assertAlmostEqual(
+            got_a,
+            round(
+                (55_577 * opus["input"] + 37_632 * opus["input"] * 0.10 + 1_200 * opus["output"])
+                / 1e6,
+                4,
+            ),
+        )
+        # a fully cached OpenAI prompt costs the cached rate only; cached >
+        # input (an inconsistent sample) never goes negative
+        self.assertAlmostEqual(
+            sample_data.priced_cost("openai_codex", "gpt-6-astra", 100_000, 0, 100_000, 0),
+            0.10,
+            places=4,
+        )
+        self.assertAlmostEqual(
+            sample_data.priced_cost("openai_codex", "gpt-6-astra", 10, 0, 50, 0),
+            round(50 * gpt["input"] * 0.10 / 1e6, 4),
+        )
+        # OpenAI's cache WRITES are inside the prompt total too (mu's
+        # UsageSemantics::openai_style sets cache_creation_in_input): a written
+        # token bills once at the write modifier, never also as fresh input.
+        # 10k prompt = 1k fresh + 4k read + 5k written on a $10 card:
+        # 0.01 + 4k x $1 + 5k x $12.5 = 0.0765, not 0.1265 (the mu board's
+        # round-3 finding, the same double charge in this formula).
+        comp = sample_data.cost_components("openai_api", "gpt-6-astra", 10_000, 0, 4_000, 5_000)
+        self.assertAlmostEqual(comp["input"], 1_000 * gpt["input"] / 1e6)
+        self.assertAlmostEqual(
+            comp["cache_write"], 5_000 * gpt["input"] * sample_data.MULT["write_5m"] / 1e6
+        )
+        self.assertAlmostEqual(
+            sample_data.priced_cost("openai_api", "gpt-6-astra", 10_000, 0, 4_000, 5_000), 0.0765
+        )
+        # a prompt that is entirely written prices as writes alone
+        self.assertAlmostEqual(
+            sample_data.priced_cost("openai_api", "gpt-6-astra", 10_000, 0, 0, 10_000), 0.125
+        )
+        # Anthropic's written tokens are a separate bucket: fresh input stays
+        self.assertAlmostEqual(
+            sample_data.cost_components("anthropic_api", "gpt-6-astra", 10_000, 0, 0, 10_000)[
+                "input"
+            ],
+            10_000 * gpt["input"] / 1e6,
+        )
+        # unlisted models flag as 0.0, never guessed
+        self.assertEqual(sample_data.priced_cost("openai_codex", "gpt-9-nope", 1000, 10, 0, 0), 0.0)
+        # gpt-6-astra is rated (it was unpriced since the 2026-09-09 roster move)
+        self.assertEqual(sample_data.rate_key("gpt-6-astra"), "gpt-6-astra")
+
+    def test_producer_cost_wins_over_the_rate_card_and_older_sinks_still_price(self):
+        # mu prices each task per model call at telemetry time (tasks.cost_usd,
+        # mu-hx0ta) — the only place gpt-6-astra's per-request long-context
+        # tier is exact. The loader takes that figure when the sink has it
+        # and prices from totals (base rate) only when it does not.
+        import sqlite3
+        import tempfile
+
+        schema = (
+            "CREATE TABLE tasks (task_id TEXT PRIMARY KEY, session_id TEXT, provider TEXT, "
+            "model TEXT, exit_reason TEXT, outcome_class TEXT, tool_call_count INTEGER, "
+            "prompt_tokens INTEGER, completion_tokens INTEGER, cache_read_tokens INTEGER, "
+            "cache_write_tokens INTEGER, started_at_unix_ms INTEGER, ended_at_unix_ms INTEGER{extra})"
+        )
+        cols = "task_id, session_id, provider, model, exit_reason, outcome_class, tool_call_count, "
+        cols += "prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens, "
+        cols += "started_at_unix_ms, ended_at_unix_ms"
+        with tempfile.TemporaryDirectory() as tmp:
+            new = os.path.join(tmp, "new.sqlite")
+            con = sqlite3.connect(new)
+            con.execute(schema.format(extra=", cost_usd REAL"))
+            # one 300k-prompt task: the producer saw a single 300k call and
+            # applied the tier ($6.00); the base rate on the totals is $3.00
+            con.execute(
+                f"INSERT INTO tasks ({cols}, cost_usd) VALUES "
+                "('t1','s1','openai_api','gpt-6-astra','done','ok',0,300000,0,0,0,1,2,6.0)"
+            )
+            # a task the producer could not price (NULL) falls back to the card
+            con.execute(
+                f"INSERT INTO tasks ({cols}, cost_usd) VALUES "
+                "('t2','s2','openai_api','gpt-6-astra','done','ok',0,1000,0,0,0,1,2,NULL)"
+            )
+            con.commit()
+            con.close()
+            rows = {r["task_id"]: r for r in sample_data._load("mu", new)}
+            self.assertEqual(rows["t1"]["cost"], 6.0)
+            self.assertEqual(rows["t2"]["cost"], 0.01)
+
+            old = os.path.join(tmp, "old.sqlite")
+            con = sqlite3.connect(old)
+            con.execute(schema.format(extra=""))
+            con.execute(
+                f"INSERT INTO tasks ({cols}) VALUES "
+                "('t1','s1','openai_api','gpt-6-astra','done','ok',0,300000,0,0,0,1,2)"
+            )
+            con.commit()
+            con.close()
+            rows = {r["task_id"]: r for r in sample_data._load("mu", old)}
+            # no column: the base-rate figure, never a crash
+            self.assertEqual(rows["t1"]["cost"], 3.0)
+
     def test_short_id_is_stable_and_prefixed(self):
         a = sample_data._short_id("mu", "task-1")
         self.assertEqual(a, sample_data._short_id("mu", "task-1"))  # deterministic
