@@ -15,7 +15,10 @@ System prompt = judge/behavior-judge-system-prompt.txt with {CLASS_RUBRIC} fille
 from judge/rubric.md for the given class, passed via --append-system-prompt.
 
 Usage: run_judge.py --transcript <rendered.txt> --cls <class-id> [--role R] [--host H --model M]
-Prints the verdict to stdout; the chosen provider/model + timing to stderr.
+Prints the verdict to stdout; the chosen provider/model + timing to stderr. When no rank
+produces one, stdout gets `{"behavior":..,"occurred":null,"attempts":[..]}` — one record
+per rank with its exit code, outcome kind and the dispatcher's reason — and the process
+exits 1 with the same reasons on its last stderr line.
 """
 
 import argparse
@@ -103,13 +106,30 @@ def _dispatch_lib():
     return os.path.expanduser("~/.local/bin/agent-dispatch.sh")
 
 
+def _last_line(text):
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    return lines[-1] if lines else ""
+
+
 def dispatch(provider, model, sys_file, transcript_path, timeout):
     """Run one resolved target through the SHARED dispatcher — `agent_dispatch`, sourced
     from agent-dispatch.sh, the one thing everything should use. It routes claude-vs-mu
     ToS-cleanly, holds the cooperative ollama lease, and stays hermetic; `agent-role`'s
     demote-when-held already steers resolution off a busy box. The judge needs no tools
-    (TOOLS=''); the class rubric is the system prompt. Returns (verdict_text, ok)."""
+    (TOOLS=''); the class rubric is the system prompt.
+
+    Returns (reply_text, rc, reason). `reason` is WHY a call went wrong, for the log: the
+    dispatcher's own last stderr line (its classification — out of tokens, auth failure,
+    seat skipped) when it wrote one, else the last line mu/claude wrote to the errlog (the
+    raw provider error). Empty on a clean call. Before this the dispatcher's stderr was
+    captured and dropped, so a whole cron run could fail every signature and the log
+    only ever said "no target produced a verdict" (mu-qmnoo)."""
     script = '. "$AGENT_DISPATCH_LIB" && agent_dispatch "$1" "$2" "$3"'
+    # The model's own stderr (mu's notices, the provider's error line) goes to ERRLOG,
+    # not to the dispatcher's stderr; a per-call file keeps this call's tail separable
+    # and leaves nothing behind in /tmp.
+    with tempfile.NamedTemporaryFile(suffix=".err", delete=False) as ef:
+        errlog = ef.name
     # HARD billing guard: strip every ANTHROPIC* var so a key present in the ambient
     # environment (shell export, cron env) can never route a judge call to the metered
     # API — claude targets resolve to the OAuth subscription or fail. The judge's
@@ -120,16 +140,64 @@ def dispatch(provider, model, sys_file, transcript_path, timeout):
         "SYSPROMPT": sys_file,
         "TOOLS": "",  # pure read-transcript -> verdict; no read/grep/bash tools
         "TIMEOUT": str(timeout),
+        "ERRLOG": errlog,
     }
-    r = subprocess.run(
-        ["sh", "-c", script, "sh", provider, model, transcript_path],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=timeout + 60,
-    )
-    text = (r.stdout or "").strip()
-    return text, bool(text)
+    try:
+        try:
+            r = subprocess.run(
+                ["sh", "-c", script, "sh", provider, model, transcript_path],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=timeout + 60,
+            )
+        except subprocess.TimeoutExpired:
+            # The dispatcher's own `timeout` should have fired first (exit 124); this is
+            # the backstop past it, and it must not read as a crash of the runner.
+            return "", 124, f"dispatcher did not return within {timeout + 60}s"
+        text = (r.stdout or "").strip()
+        reason = _last_line(r.stderr)
+        if not reason:
+            try:
+                reason = _last_line(open(errlog, errors="ignore").read())
+            except OSError:
+                reason = ""
+        return text, r.returncode, reason
+    finally:
+        try:
+            os.unlink(errlog)
+        except OSError:
+            pass
+
+
+def is_verdict(obj):
+    """The envelope's one load-bearing field: `occurred` as a boolean. A parseable object
+    without it (a model answering with some other JSON, or `occurred: null`) is not a
+    verdict — the store keys on that field, so accepting it here would end the ladder
+    early on something the consumer then throws away as no verdict."""
+    return isinstance(obj, dict) and isinstance(obj.get("occurred"), bool)
+
+
+def attempt_kind(rc, text, verdict, parsed=None):
+    """Classify one rank's outcome from its EXIT CODE (the dispatcher's contract: 4 out of
+    tokens, 124 timeout, 75 seat skipped), never from a phrase in its output — `mu ask`
+    echoes the model's reasoning to the same stream, so text cannot tell a provider error
+    from a model reasoning about one. Exit 0 with no verdict is the one text-shaped case:
+    the model answered but not in the JSON envelope (prose, or a truncated reply), or in
+    JSON that is not the envelope (`parsed` given: bad_envelope)."""
+    if verdict is not None:
+        return "verdict"
+    if rc == 4:
+        return "out_of_tokens"
+    if rc == 124:
+        return "timeout"
+    if rc == 75:
+        return "skipped"
+    if rc != 0:
+        return f"exit_{rc}"
+    if parsed is not None:
+        return "bad_envelope"
+    return "no_json" if text else "empty_reply"
 
 
 def verify_evidence(verdict, transcript_path):
@@ -227,23 +295,51 @@ def main():
     with tempfile.NamedTemporaryFile("w", suffix=".sysprompt", delete=False) as sf:
         sf.write(system)
         sys_file = sf.name
+    attempts = []
     try:
         for provider, model in ladder:
             t0 = time.time()
-            text, ok = dispatch(provider, model, sys_file, args.transcript, args.timeout)
-            verdict = coerce_json(text) if ok else None
+            text, rc, reason = dispatch(provider, model, sys_file, args.transcript, args.timeout)
+            parsed = coerce_json(text) if rc == 0 and text else None
+            verdict = parsed if is_verdict(parsed) else None
+            secs = round(time.time() - t0)
             if verdict is not None:
                 verify_evidence(verdict, args.transcript)
                 # Stamp WHICH target produced this verdict — only the rank-0 ollama model is
                 # rubric-validated; a deranked/busy box routes to fallbacks whose verdicts the
                 # consumer must be able to tell apart. Survives in the verdict's own JSON.
                 verdict["judge_model"] = f"{provider}/{model}"
-                sys.stderr.write(f"[{args.cls}] {provider}/{model} {time.time() - t0:.0f}s\n")
+                sys.stderr.write(f"[{args.cls}] {provider}/{model} {secs}s\n")
                 print(json.dumps(verdict))  # clean JSON to stdout — the parseable contract
                 return
-            why = "unavailable (busy/error)" if not ok else "returned no parseable JSON"
-            sys.stderr.write(f"[{args.cls}] {provider}/{model} {why} -> next rank\n")
-        sys.exit(f"judge: no target in role '{args.role}' produced a verdict")
+            kind = attempt_kind(rc, text, verdict, parsed)
+            if kind in ("no_json", "bad_envelope"):
+                # The model answered outside the envelope (a prose "**cls: occurred=false**"
+                # was the observed shape). Quote how the reply began so the next reader can
+                # tell a format drift from a truncation without re-running the judge. Kept
+                # next to whatever the errlog said (a runner warning, a truncation notice),
+                # since a clean exit does not mean the lane wrote nothing.
+                reason = f"reply began: {text[:120]!r}" + (
+                    f"; lane said: {reason}" if reason else ""
+                )
+            attempts.append(
+                {"provider": provider, "model": model, "rc": rc, "kind": kind, "secs": secs}
+                | ({"reason": reason} if reason else {})
+            )
+            sys.stderr.write(
+                f"[{args.cls}] {provider}/{model} {kind} (exit {rc}, {secs}s)"
+                f"{': ' + reason if reason else ''} -> next rank\n"
+            )
+        # Every rank failed. The record of WHY goes to stdout as a structured object (the
+        # caller reads JSON there already; `occurred: null` marks it as no verdict) and the
+        # exit line carries the same per-rank reasons for a log that keeps only that.
+        print(json.dumps({"behavior": args.cls, "occurred": None, "attempts": attempts}))
+        why = "; ".join(
+            f"{a['provider']}/{a['model']}: {a['kind']}"
+            + (f" ({a['reason']})" if a.get("reason") else "")
+            for a in attempts
+        )
+        sys.exit(f"judge: no target in role '{args.role}' produced a verdict — {why}")
     finally:
         os.unlink(sys_file)
 
