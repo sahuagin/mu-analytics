@@ -125,19 +125,48 @@ def select_delta(current, ledger):
     return delta
 
 
+def classify_failure(stdout, stderr):
+    """What one failed run_judge.py call says about itself -> (kinds, lines).
+
+    run_judge.py's failure contract: stdout carries `{"occurred": null, "attempts": [..]}`
+    with one record per rank — its exit code, an outcome kind derived from that code
+    (out_of_tokens / timeout / skipped / no_json / ...) and the dispatcher's reason — so
+    the log can say WHY every rank came up empty, per rank. Older or crashed runners
+    leave no such record; then the stderr tail is all there is, and the kind is
+    `runner_error`. The kinds are read from the record, never inferred from text."""
+    try:
+        rec = json.loads(stdout or "")
+    except (json.JSONDecodeError, ValueError):
+        rec = None
+    attempts = rec.get("attempts") if isinstance(rec, dict) else None
+    if attempts:
+        kinds = [a.get("kind", "?") for a in attempts]
+        lines = [
+            f"{a.get('provider')}/{a.get('model')}: {a.get('kind', '?')} (exit {a.get('rc')}, "
+            f"{a.get('secs', '?')}s)" + (f" — {a['reason']}" if a.get("reason") else "")
+            for a in attempts
+        ]
+        return kinds, lines
+    tail = [ln for ln in (stderr or "").strip().splitlines() if ln.strip()][-3:]
+    return ["runner_error"], tail or ["(no stderr; empty stdout)"]
+
+
 def judge_session(path, classes, timeout, skip_ollama=False):
-    """Render one transcript and judge it across every class. Returns (verdicts, ok):
-    verdicts is the list of per-class result dicts; ok is True only if EVERY class
-    returned a verdict (a partial result is not recorded, so it retries next run).
-    skip_ollama drops the local box from run_judge's ladder (parallel-backfill routing)."""
+    """Render one transcript and judge it across every class. Returns (verdicts, ok,
+    failures): verdicts is the list of per-class result dicts; ok is True only if EVERY
+    class returned a verdict (a partial result is not recorded, so it retries next run);
+    failures is the list of outcome kinds of every rank that produced no verdict, for the
+    run's tally. skip_ollama drops the local box from run_judge's ladder (parallel-backfill
+    routing)."""
     rr = subprocess.run([sys.executable, RENDER, path], capture_output=True, text=True, timeout=300)
     if not rr.stdout.strip():
-        return [], False
+        return [], False, ["render_empty"]
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as tf:
         tf.write(rr.stdout)
         txt = tf.name
     try:
         verdicts = []
+        failures = []
         ok = True
         for cls in classes:
             cmd = [sys.executable, JUDGE, "--transcript", txt, "--cls", cls]
@@ -147,36 +176,61 @@ def judge_session(path, classes, timeout, skip_ollama=False):
                 jr = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
             except subprocess.TimeoutExpired:
                 sys.stderr.write(f"    {cls}: FAILED — timed out after {timeout}s\n")
+                failures.append("timeout")
                 ok = False
                 continue
-            try:
-                v = json.loads(jr.stdout)
-                verdicts.append(
-                    {
-                        "behavior": cls,
-                        "occurred": v.get("occurred"),
-                        "severity": v.get("severity"),
-                        "confidence": v.get("confidence"),
-                        "n_evidence": len(v.get("evidence", [])),
-                        "n_evidence_verified": v.get("n_evidence_verified"),
-                        "model": v.get("judge_model"),
-                        # Keep the judge's actual reasoning — regenerating it is a full
-                        # ~6-min re-judge, so never throw it away at ingest.
-                        "summary": v.get("summary"),
-                        "evidence": v.get("evidence"),  # [{turn, quote, why}, ...]
-                    }
-                )
-            except (json.JSONDecodeError, ValueError):
-                # run_judge.py emits clean JSON on success and the real reason to
-                # stderr on failure (role unresolved / box down / no parseable JSON).
-                # Surface that — a bare "Expecting value" tells us nothing in a cron log.
-                reason = (jr.stderr or "").strip().splitlines()
-                tail = reason[-1] if reason else "(no stderr; empty stdout)"
-                sys.stderr.write(f"    {cls}: FAILED — {tail[:160]}\n")
+            v = None
+            if jr.returncode == 0:
+                try:
+                    v = json.loads(jr.stdout)
+                except (json.JSONDecodeError, ValueError):
+                    v = None
+            if v is None or v.get("occurred") is None:
+                # No verdict. Say why, per rank tried — the reason used to stop at the
+                # runner's last stderr line ("no target in role 'judge' produced a
+                # verdict"), which is what the cron log showed for every failed signature
+                # for a fortnight while the cause stayed unknown (mu-qmnoo).
+                kinds, lines = classify_failure(jr.stdout, jr.stderr)
+                failures.extend(kinds)
+                sys.stderr.write(f"    {cls}: FAILED — no rank produced a verdict\n")
+                for ln in lines:
+                    sys.stderr.write(f"      {ln[:400]}\n")
                 ok = False
-        return verdicts, ok
+                continue
+            verdicts.append(
+                {
+                    "behavior": cls,
+                    "occurred": v.get("occurred"),
+                    "severity": v.get("severity"),
+                    "confidence": v.get("confidence"),
+                    "n_evidence": len(v.get("evidence", [])),
+                    "n_evidence_verified": v.get("n_evidence_verified"),
+                    "model": v.get("judge_model"),
+                    # Keep the judge's actual reasoning — regenerating it is a full
+                    # ~6-min re-judge, so never throw it away at ingest.
+                    "summary": v.get("summary"),
+                    "evidence": v.get("evidence"),  # [{turn, quote, why}, ...]
+                }
+            )
+        return verdicts, ok, failures
     finally:
         os.unlink(txt)
+
+
+def run_summary(state):
+    """The run's closing line: outcomes counted, not the absence of errors. A cron log
+    reader sees how many verdicts were WRITTEN against how many the delta called for,
+    and — when ranks came up empty — a tally of why, by the runner's outcome kinds."""
+    line = (
+        f"  done: judged {state['judged']}, skipped {state['skipped']}; verdicts written "
+        f"{state['written']} of {state['expected']} expected."
+    )
+    if state["failures"]:
+        tally = ", ".join(
+            f"{k} {n}" for k, n in sorted(state["failures"].items(), key=lambda kv: -kv[1])
+        )
+        line += f" no-verdict ranks: {tally}."
+    return line
 
 
 def _judge_one(ref, current, classes, timeout, skip_ollama, lock, state):
@@ -192,19 +246,24 @@ def _judge_one(ref, current, classes, timeout, skip_ollama, lock, state):
     sys.stderr.write(f"[{idx}/{state['n']}] {ref}\n")
     sys.stderr.flush()
     path, mtime = current[ref]
-    verdicts, ok = judge_session(path, classes, timeout, skip_ollama)
+    verdicts, ok, failures = judge_session(path, classes, timeout, skip_ollama)
     with lock:
+        state["expected"] += len(classes)
+        for kind in failures:
+            state["failures"][kind] = state["failures"].get(kind, 0) + 1
         if ok and verdicts:
             judge_store.record(ref, "cc", mtime, verdicts)
             state["judged"] += 1
+            state["written"] += len(verdicts)
             state["dead"] = 0
             fired = [v["behavior"] for v in verdicts if v.get("occurred")]
             sys.stderr.write(f"    {ref}: recorded; occurred: {fired or 'none'}\n")
         else:
             state["skipped"] += 1
             sys.stderr.write(f"    {ref}: incomplete — not recorded (retry next run)\n")
-            # Empty output = box not loaded, never a real verdict. A run of zeros means
-            # a dead box; trip the breaker so the pool stops feeding it work.
+            # A session with no verdict at all means every rank came up empty for every
+            # class — a dead lane (box unloaded, role out of tokens), never a real
+            # verdict. A run of them trips the breaker so the pool stops feeding it work.
             state["dead"] = state["dead"] + 1 if not verdicts else 0
             if state["dead"] >= DEAD_STREAK_ABORT:
                 state["abort"].set()
@@ -349,6 +408,9 @@ def main():
         "judged": 0,
         "skipped": 0,
         "dead": 0,
+        "expected": 0,  # verdicts the delta called for (sessions x classes)
+        "written": 0,  # verdicts actually recorded
+        "failures": {},  # outcome kind -> count, over every rank that gave no verdict
         "n": len(delta),
         "abort": threading.Event(),
     }
@@ -370,7 +432,7 @@ def main():
             )
         )
 
-    print(f"  done: judged {state['judged']}, skipped {state['skipped']}.")
+    print(run_summary(state))
 
 
 if __name__ == "__main__":
