@@ -28,9 +28,14 @@ Reconstruction (validated: 0 message_count mismatches on the probe session):
     It is modelled as two pseudo-spans: a static block and a tool-schema block, each
     hashed over what the log does expose, sized from `token_breakdown`. Coarse: a
     one-tool change recomputes the whole schema block under every model.
-  - per-span token weights: chars/4, rescaled per kind per call so the kind totals
-    match the logged `token_breakdown` (the renderer's own estimate). Summary spans
-    take the logged `compaction_summary` total (their text is not in the log).
+  - per-span token weights: chars/4 of the span's flattened text (assistant =
+    `assembly.rs::flatten_assistant`: text + `[tool_call:name(args)]`, no thinking).
+    That IS mu's renderer estimate: fit against the logged `token_breakdown` on
+    3,218 pre-compaction calls gives per-kind factors 0.995/1.000/0.999 with MAD
+    < 0.5%. `calibration="per-call"` additionally rescales per kind to the logged
+    breakdown (exact for the logged policy); "none" is the single ruler every
+    counterfactual policy is weighed on. Summary spans take the logged
+    `compaction_summary` total (their text is not in the log).
 
 Cache models (per consecutive model call within a session):
   flat          longest common prefix by (span id, content hash); tail re-prefilled.
@@ -61,6 +66,7 @@ import os
 import sys
 from collections import defaultdict
 from dataclasses import dataclass, field
+from typing import Any, cast
 
 MESSAGE_KINDS = ("user", "assistant", "tool_result")
 SUMMARY_KIND = "compaction_summary"
@@ -70,6 +76,7 @@ _NEEDED = (
     "user_message",
     "assistant_message_event",
     "tool_result",
+    "tool_call",
     "continuation_seeded",
     "context_cleared",
     "compaction_assembly",
@@ -113,6 +120,54 @@ class Msg:
     span_id: str
     chars: int
     hash: str
+    # Text sample for relevance scorers (capped; `chars` keeps the true length).
+    content: str = ""
+    # tool_result: the call it answers. assistant: (call_id, name, args_hash) per tool_call block.
+    call_id: str | None = None
+    tool_calls: tuple[tuple[str, str, str], ...] = ()
+
+
+CONTENT_SAMPLE = 4000
+
+
+def _tool_calls_of(blocks: object) -> tuple[tuple[str, str, str], ...]:
+    out = []
+    if isinstance(blocks, list):
+        for raw in blocks:
+            if not isinstance(raw, dict):
+                continue
+            b = cast("dict[str, Any]", raw)
+            if b.get("type") == "tool_call":
+                args = b.get("arguments", b.get("input"))
+                out.append((str(b.get("id") or ""), str(b.get("name") or ""), _h(args)))
+    return tuple(out)
+
+
+def _assistant_text(blocks: object) -> str:
+    """mu-core assembly.rs `flatten_assistant`: text blocks verbatim, tool calls as
+    `[tool_call:name(args_json)]`, thinking dropped, pieces joined with "". The
+    renderer's token estimate is chars/4 of THIS string (ruler fit 2026-10-05:
+    user and tool_result factors 1.000 against the logged token_breakdown)."""
+    if isinstance(blocks, str):
+        return blocks
+    parts = []
+    if isinstance(blocks, list):
+        for raw in blocks:
+            if not isinstance(raw, dict):
+                continue
+            b = cast("dict[str, Any]", raw)
+            if b.get("type") == "text":
+                parts.append(str(b.get("text") or ""))
+            elif b.get("type") == "tool_call":
+                args = b.get("arguments", b.get("input"))
+                parts.append(
+                    f"[tool_call:{b.get('name') or ''}({json.dumps(args, separators=(',', ':'), default=str)})]"
+                )
+    return "".join(parts)
+
+
+def _assistant_chars(blocks: object) -> int:
+    return len(_assistant_text(blocks))
 
 
 @dataclass
@@ -218,7 +273,33 @@ def simulate_call(
 
 
 @dataclass
-class _ReplayState:
+class SessionStats:
+    """Per-session counters that depend on WHICH spans were retained.
+
+    `dup_after_drop` is the recall-miss proxy: the agent re-issued a tool call
+    identical (name + arguments) to one whose result was no longer in the rope.
+    Under the logged policy that is a real recompute the operator paid for; under a
+    counterfactual policy it is what that policy would have avoided (or caused).
+    `dup_while_live` is the same re-issue while the result WAS in context — the
+    agent's baseline redundancy, which no retention policy can fix.
+    """
+
+    tool_calls: int = 0
+    dup_after_drop: int = 0
+    dup_while_live: int = 0
+    # dup_after_drop split by tool name: a repeated `read` of the same path is a
+    # recompute; a repeated `mailbox`/`who` poll with identical args is not.
+    dup_after_drop_by_tool: dict[str, int] = field(default_factory=dict)
+    dup_while_live_by_tool: dict[str, int] = field(default_factory=dict)
+    compactions: int = 0
+    tokens_after_total: float = 0.0  # sum of post-compaction rope sizes (compaction calls)
+    tokens_after_logged: float = 0.0  # what mu logged for the same compactions
+    decision_jaccard_sum: float = 0.0  # overlap of policy drop set vs logged, per compaction
+    recon_mismatches: int = 0
+
+
+@dataclass
+class ReplayState:
     msgs: list[Msg] = field(default_factory=list)
     dropped: set[str] = field(default_factory=set)
     absorbed: set[str] = field(default_factory=set)
@@ -228,22 +309,75 @@ class _ReplayState:
     cache_read_in_input: bool = False
     provider: str = ""
     model: str = ""
+    # Calibration state shared with counterfactual policies.
+    prefix_tokens: float = 0.0  # standing prefix (static + tool schemas) from the last snapshot
+    kind_scale: dict[str, float] = field(default_factory=dict)
+    # Tool-call bookkeeping for the recall-miss proxy.
+    call_result_span: dict[str, str] = field(default_factory=dict)  # call_id -> result span id
+    calls_by_sig: dict[tuple[str, str], list[str]] = field(default_factory=dict)
+    logged_dropped_cum: set[str] = field(default_factory=set)
+    stats: SessionStats = field(default_factory=SessionStats)
 
     def reset(self) -> None:
         self.msgs.clear()
         self.dropped.clear()
         self.absorbed.clear()
         self.summaries.clear()
+        self.call_result_span.clear()
+        self.calls_by_sig.clear()
+        self.logged_dropped_cum.clear()
 
-    def add(self, role: str, chars: int, h: str, call_id: str | None = None) -> None:
+    def add(
+        self,
+        role: str,
+        chars: int,
+        h: str,
+        call_id: str | None = None,
+        content: str = "",
+        tool_calls: tuple[tuple[str, str, str], ...] = (),
+    ) -> None:
         n = len(self.msgs)
         sid = f"msg-{n}-tool-result:{call_id}" if role == "tool_result" else f"msg-{n}-{role}"
-        self.msgs.append(Msg(n, role, sid, chars, h))
+        self.msgs.append(Msg(n, role, sid, chars, h, content[:CONTENT_SAMPLE], call_id, tool_calls))
+        if role == "tool_result" and call_id:
+            self.call_result_span[call_id] = sid
 
     def live(self) -> list[Msg]:
         return [
             m for m in self.msgs if m.span_id not in self.dropped and m.span_id not in self.absorbed
         ]
+
+    def is_live(self, span_id: str) -> bool:
+        return span_id not in self.dropped and span_id not in self.absorbed
+
+    def note_tool_call(self, call_id: str, name: str, args_hash: str) -> None:
+        """Record a tool call; classify it as a duplicate of an earlier identical call."""
+        self.stats.tool_calls += 1
+        sig = (name, args_hash)
+        earlier = self.calls_by_sig.get(sig)
+        if earlier:
+            prev_result = self.call_result_span.get(earlier[-1])
+            if prev_result is None or not self.is_live(prev_result):
+                self.stats.dup_after_drop += 1
+                by = self.stats.dup_after_drop_by_tool
+                by[name] = by.get(name, 0) + 1
+            else:
+                self.stats.dup_while_live += 1
+                by = self.stats.dup_while_live_by_tool
+                by[name] = by.get(name, 0) + 1
+        self.calls_by_sig.setdefault(sig, []).append(call_id)
+
+    def apply_decisions(self, decisions: list[dict]) -> None:
+        for d in decisions:
+            a = d.get("action")
+            if a == "dropped":
+                self.dropped.add(d["span_id"])
+            elif a == "summarized":
+                self.absorbed.update(d.get("absorbed_span_ids") or [])
+                self.summaries.append(d["summary_span_id"])
+
+
+_ReplayState = ReplayState  # back-compat alias
 
 
 def _content_len(obj: object) -> int:
@@ -252,14 +386,23 @@ def _content_len(obj: object) -> int:
     return len(json.dumps(obj, separators=(",", ":"), default=str))
 
 
-def _seed_message(st: _ReplayState, m: dict) -> None:
+def _seed_message(st: ReplayState, m: dict) -> None:
     role = m.get("role")
     if role == "user":
         c = m.get("content", "")
-        st.add("user", _content_len(c), _h("user", c))
+        st.add("user", _content_len(c), _h("user", c), content=str(c))
     elif role == "assistant":
         c = m.get("content", [])
-        st.add("assistant", _content_len(c), _h("assistant", c))
+        tcs = _tool_calls_of(c)
+        st.add(
+            "assistant",
+            _assistant_chars(c),
+            _h("assistant", c),
+            content=_assistant_text(c),
+            tool_calls=tcs,
+        )
+        for cid, name, ah in tcs:
+            st.note_tool_call(cid, name, ah)
     elif role == "tool_result":
         c = m.get("content", "")
         st.add(
@@ -267,31 +410,45 @@ def _seed_message(st: _ReplayState, m: dict) -> None:
             _content_len(c),
             _h("tool", c, m.get("is_error", False)),
             m.get("call_id"),
+            content=str(c),
         )
 
 
-def build_rope(st: _ReplayState, p: dict) -> tuple[list[Seg], bool]:
+def build_rope(st: ReplayState, p: dict, calibration: str = "per-call") -> tuple[list[Seg], bool]:
     """Project replay state + one context_assembly payload into the ordered rope.
 
     Returns (segments, recon_ok). recon_ok is False when the replayed message
     count disagrees with the snapshot — the row is still produced but flagged.
+
+    `calibration`: "none" (recommended; the only choice for counterfactual
+    policies) weighs every span at chars/4 of its flattened text, mu's own ruler;
+    "per-call" rescales per kind to THIS call's logged token_breakdown; "session"
+    freezes the per-kind scale learned on the first call.
     """
     bd: dict[str, float] = {k: float(v) for k, v in (p.get("token_breakdown") or {}).items()}
     live = st.live()
 
-    # Per-kind calibration: chars/4 rescaled so kind totals match the renderer's.
     raw_by_kind: dict[str, float] = defaultdict(float)
     for m in live:
         raw_by_kind[m.role] += m.chars / 4.0
-    scale = {}
-    for kind in MESSAGE_KINDS:
-        logged = bd.get(kind)
-        raw = raw_by_kind.get(kind, 0.0)
-        scale[kind] = (logged / raw) if (logged and raw > 0) else 1.0
+    if calibration == "none":
+        # One ruler for every policy: chars/4 of the flattened span text, which is
+        # what mu's renderer estimates (fit against logged token_breakdown).
+        scale = dict.fromkeys(MESSAGE_KINDS, 1.0)
+    else:
+        if calibration == "per-call" or not st.kind_scale:
+            scale = {}
+            for kind in MESSAGE_KINDS:
+                logged = bd.get(kind)
+                raw = raw_by_kind.get(kind, 0.0)
+                scale[kind] = (logged / raw) if (logged and raw > 0) else 1.0
+            st.kind_scale = scale
+        scale = st.kind_scale
 
     prefix_kinds = {k: v for k, v in bd.items() if k not in MESSAGE_KINDS and k != SUMMARY_KIND}
     tool_tokens = prefix_kinds.pop("tool_schema", 0.0)
     static_tokens = sum(prefix_kinds.values())
+    st.prefix_tokens = static_tokens + tool_tokens
     first_ids = p.get("first_span_ids") or []
     static_ids = [s for s in first_ids if not s.startswith("tool-schema:")]
     tool_count = int(p.get("tool_count") or 0)
@@ -330,9 +487,24 @@ def simulate_session(
     path: str,
     scenarios: tuple[Scenario, ...] = DEFAULT_SCENARIOS,
     session_label: str | None = None,
+    policy=None,
+    calibration: str = "per-call",
 ) -> list[CallRow]:
+    rows, _stats = simulate_session_full(path, scenarios, session_label, policy, calibration)
+    return rows
+
+
+def simulate_session_full(
+    path: str,
+    scenarios: tuple[Scenario, ...] = DEFAULT_SCENARIOS,
+    session_label: str | None = None,
+    policy=None,
+    calibration: str = "per-call",
+) -> tuple[list[CallRow], SessionStats]:
+    """Replay one session. `policy` (see compaction_policies.py) replaces the
+    logged compaction decisions with a counterfactual policy's; None = logged."""
     label = session_label or _session_label(path)
-    st = _ReplayState()
+    st = ReplayState()
     rows: list[CallRow] = []
     prev: list[Seg] | None = None
     resident: dict[str, set[tuple[str, str]]] = {sc.name: set() for sc in scenarios}
@@ -367,12 +539,24 @@ def simulate_session(
             st.cache_read_in_input = bool(sem.get("cache_read_in_input"))
         elif k == "user_message":
             c = p.get("content", "")
-            st.add("user", _content_len(c), _h("user", c))
+            st.add("user", _content_len(c), _h("user", c), content=str(c))
         elif k == "assistant_message_event":
             msg = p.get("message") or {}
             flush_usage(msg.get("usage"))
             c = msg.get("content", [])
-            st.add("assistant", _content_len(c), _h("assistant", c))
+            tcs = _tool_calls_of(c)
+            st.add(
+                "assistant",
+                _assistant_chars(c),
+                _h("assistant", c),
+                content=_assistant_text(c),
+                tool_calls=tcs,
+            )
+            # Live sessions also emit a tool_call event per call; count there, not here.
+        elif k == "tool_call":
+            st.note_tool_call(
+                str(p.get("call_id") or ""), str(p.get("name") or ""), _h(p.get("arguments"))
+            )
         elif k == "tool_result":
             c = p.get("content", "")
             st.add(
@@ -380,6 +564,7 @@ def simulate_session(
                 _content_len(c),
                 _h("tool", c, p.get("is_error", False)),
                 p.get("call_id"),
+                content=str(c),
             )
         elif k == "continuation_seeded":
             for m in p.get("messages") or []:
@@ -390,17 +575,29 @@ def simulate_session(
             for s in resident.values():
                 s.clear()
         elif k == "compaction_assembly":
-            for d in p.get("decisions") or []:
-                a = d.get("action")
-                if a == "dropped":
-                    st.dropped.add(d["span_id"])
-                elif a == "summarized":
-                    st.absorbed.update(d.get("absorbed_span_ids") or [])
-                    st.summaries.append(d["summary_span_id"])
+            logged = list(p.get("decisions") or [])
+            decisions = policy.compact(st, p) if policy is not None else logged
+            st.apply_decisions(decisions)
             st.pending_compaction = p.get("model_call_id")
+            st.stats.compactions += 1
+            st.stats.tokens_after_logged += float(p.get("tokens_after") or 0)
+            if policy is not None:
+                # Agreement is measured on the CUMULATIVE drop sets: after the first
+                # disagreement the per-compaction sets diverge by construction (a
+                # span the policy kept gets dropped at a later compaction than mu
+                # dropped it), while the cumulative sets converge if the policies agree.
+                st.logged_dropped_cum.update(
+                    d["span_id"] for d in logged if d.get("action") == "dropped"
+                )
+                a, b = st.logged_dropped_cum, st.dropped
+                st.stats.decision_jaccard_sum += (len(a & b) / len(a | b)) if (a | b) else 1.0
         elif k == "context_assembly":
             flush_usage(None)
-            cur, ok = build_rope(st, p)
+            cur, ok = build_rope(st, p, calibration)
+            if not ok:
+                st.stats.recon_mismatches += 1
+            if st.pending_compaction == int(p.get("model_call_id") or 0):
+                st.stats.tokens_after_total += sum(s.tokens for s in cur)
             call_id = int(p.get("model_call_id") or 0)
             prefill: dict[str, float] = {}
             reloc: dict[str, float] = {}
@@ -435,7 +632,7 @@ def simulate_session(
             st.pending_compaction = None
             st.pending_call = p
             prev = cur
-    return rows
+    return rows, st.stats
 
 
 def _session_label(path: str) -> str:
@@ -622,6 +819,18 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--min-calls", type=int, default=2, help="skip sessions with fewer model calls")
     ap.add_argument("--limit", type=int, default=0, help="stop after N sessions (0 = all)")
     ap.add_argument("--k", type=float, default=None, help="add a custom 'seg k=K r=prev' scenario")
+    ap.add_argument(
+        "--policy",
+        default=None,
+        help="replace logged compaction decisions with a counterfactual policy "
+        "(see compaction_policies.py: logged | span-family-drop | lexical)",
+    )
+    ap.add_argument(
+        "--calibration",
+        choices=("none", "per-call", "session"),
+        default=None,
+        help="token-weight calibration (default: per-call for logged, none for a policy)",
+    )
     ap.add_argument("--json", action="store_true", help="emit the aggregate as JSON")
     ap.add_argument("--calls-out", help="write one JSON row per model call to this path")
     ap.add_argument("--top", type=int, default=10, help="sessions to list in the text report")
@@ -639,6 +848,12 @@ def main(argv: list[str] | None = None) -> int:
     scenarios = DEFAULT_SCENARIOS
     if args.k is not None:
         scenarios = scenarios + (Scenario(f"seg k={int(args.k)} r=prev", args.k, "prev"),)
+    policy = None
+    if args.policy and args.policy != "logged":
+        import compaction_policies
+
+        policy = compaction_policies.make(args.policy)
+    calibration = args.calibration or ("none" if policy is not None else "per-call")
 
     rows: list[CallRow] = []
     n_sessions = 0
@@ -647,7 +862,7 @@ def main(argv: list[str] | None = None) -> int:
         for path in paths:
             if args.only_compacted and not has_compaction(path):
                 continue
-            srows = simulate_session(path, scenarios)
+            srows = simulate_session(path, scenarios, policy=policy, calibration=calibration)
             if len(srows) < args.min_calls:
                 continue
             n_sessions += 1

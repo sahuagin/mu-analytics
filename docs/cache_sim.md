@@ -142,9 +142,119 @@ the ideal model predicts 20× fewer uncached tokens than OpenAI reports, and the
 per-call `cache_read_input_tokens` sequence is erratic (68k, 53k, 10k, 52k, 2k, 7k,
 0, 7k, 0, 100k on consecutive ~100k-token prompts in `5fe1882754a06d5a`). Either
 OpenAI's best-effort cache is missing most of the time on this path, or something
-in mu's codex request is not byte-stable across calls. **Lead, not conclusion** —
-`ContextAssembly.prefix_hash` exists for exactly this diagnosis but only 20
-sessions in the archive carry it.
+in mu's codex request is not byte-stable across calls.
+
+**Resolved 2026-10-04** (investigation over all 4,237 codex sessions, 22,894 calls;
+bead `mu-codex-cache-time-line-jcnx5`). Both, in different proportions:
+
+- 48.4% of non-first codex calls report `cache_read = 0`; misses are all-or-nothing,
+  every `cache_read` is a multiple of 128, no TTL or size signature (fastest
+  follow-ups miss most). Append-only tool rounds, which should be ~100% cached, miss
+  49% of the time.
+- The decisive split is how the system prompt reaches the wire. Sessions with no
+  System span (`mu ask`, review seats — 61% of calls) send
+  `build_effective_system_prompt()`'s *"Current time: HH:MM UTC. Session has been
+  running for N minutes."* as the **entire `instructions` field at byte 0**, and it
+  rotates every minute: a minute boundary between consecutive calls gives **93%
+  zero-cache** (n=910) vs 61% without (n=10,462). Sessions whose system span
+  overflows into `input[0]` (constant `DEFAULT_INSTRUCTIONS`) miss only 14%.
+- The residual is server-side: with byte-identical prompts, misses are still
+  15–60% and strongly model-dependent in the same month on the same code path
+  (gpt-6-astra 92% zero, gpt-5.5 33%), plausibly worsened by mu never sending
+  `prompt_cache_key`. `Response.prompt_cache_diagnostics` (OpenAI's own per-call
+  miss reasons) is deserialized by `mu-openai` and read by nothing.
+- `prefix_hash` is absent on every codex call because `OpenaiProvider` keeps the
+  default `NoCacheStrategy`, so `prefix_forensics` returns `None` — which is why the
+  archive could not diagnose this on its own.
+
+Fix order filed on the bead: log the diagnostics; move the time line out of the
+cacheable prefix (a volatile tail item, not byte 0); send `prompt_cache_key`; give
+the codex provider a boundary-emitting cache strategy so `prefix_hash` lands in
+`context_assembly`. Re-run `cache_sim.py --validate` on fresh codex sessions after
+the fix lands; the class-A minute-crossing hit rate should rise from 2% to the
+same-minute baseline, and the fleet ratio from 0.056 toward the 0.6–0.75 band.
+
+## Counterfactual compaction policies (the replay as a policy harness)
+
+`cache_sim.simulate_session(..., policy=...)` hands every `compaction_assembly`
+event to a policy instead of applying the logged decisions. The policy returns
+decisions in the same JSON shape mu logs, so replay, cache models and metrics are
+shared; the logged policy is the control arm and the `context_assembly` snapshot
+stays the yardstick. This is what the snapshot was logged for.
+
+Policies (`compaction_policies.py`):
+
+- **logged** — what mu did.
+- **span-family-drop** — Python port of mu-core's `SpanFamilyDropPolicy`: tier 2
+  oldest tool clusters with the assistant that issued them, tier 3 old assistant
+  turns with their trailing cluster, two most recent assistants preserved, call_id
+  pair reconciliation last. Tiers 1 and 4 never reach the message area.
+- **lexical** — the first non-model, non-positional relevance scorer: IDF-weighted
+  term overlap between each exchange unit and the last three user messages, lowest
+  score evicted first, users never evicted. A strawman to prove the harness.
+
+Target: mu passes `target_tokens = compaction_threshold / 2`
+(`agent/loop_/mod.rs`); the logged `compaction_threshold` gives it back.
+
+**One ruler.** Policies need per-span sizes to know when to stop, and the replay
+needs them to size the resulting rope. Fitting chars/4 against the logged
+`token_breakdown` on 3,218 pre-compaction calls (where the live set is known
+exactly) gives per-kind factors of 0.995 / 1.000 / 0.999 (assistant / tool_result /
+user) with MAD under 0.5%, once assistant content is flattened the way
+`assembly.rs::flatten_assistant` does (text blocks + `[tool_call:name(args)]`,
+thinking excluded). So mu's renderer estimate *is* chars/4 of the flattened text,
+and the replay uses that single ruler for every policy (`calibration="none"`).
+Before this fix the assistant measurement included thinking blocks and JSON
+overhead (factor 0.31, wildly dispersed), which made the port under-evict by 2×.
+
+**Agreement metric.** Per-compaction Jaccard of drop sets is the wrong yardstick
+for a counterfactual: after the first disagreement the sets diverge by
+construction (a span the policy kept gets dropped at a later compaction than mu
+dropped it) even when the policies agree. The report uses the *cumulative* drop
+sets, which converge when they agree.
+
+**Recall-miss proxy.** `dup_after_drop` counts tool calls identical (name +
+arguments) to an earlier call whose result was not in the rope at the time. Under
+the logged policy that is a recompute the operator actually paid for. The
+keep-everything control moves every one of the probe session's 19 duplicates from
+after-drop to while-live, which validates the measurement. `dup_while_live` is the
+same re-issue while the result was in context: the agent's baseline redundancy,
+dominated by polling tools in autonomous sessions, and not something retention can
+change. Both are reported by tool name because a repeated `read` of the same path
+is a recompute and a repeated `mailbox` poll is not.
+
+### Results — 63 compacted sessions, 1,008 compaction points, 2026-10-05
+
+| policy | tokens_after (mean) | mu logged | cumulative Jaccard | prefill flat | prefill seg k=6 | dup_after_drop | dup by tool |
+|---|---|---|---|---|---|---|---|
+| logged | 90,599 | 92,376 | 1.0 | 85.4 M | 28.2 M | **76** | read 48, bash 10, mailbox 6 |
+| span-family-drop (port) | 91,767 | 92,376 | **0.953** | 84.2 M | 28.2 M | 74 | read 48, bash 8, mailbox 6 |
+| lexical | 91,853 | 92,376 | 0.883 | **77.3 M** | 29.9 M | **99** | read 50, **bash 31**, mailbox 6 |
+
+`dup_while_live` is ~68k for every policy, 66,964 of it `bash` in one autonomous
+session polling with identical arguments. It is the agent's redundancy, not
+retention's, and it is why the by-tool split exists.
+
+Reading it:
+
+- **The hook is validated.** The port reproduces mu's cumulative drop set at 0.95
+  and its post-compaction size within 0.7%; the residual is cluster-granularity
+  ties at the stop point. A policy run through the replay is now comparable to
+  what mu actually did on the same traces.
+- **mu's real recall-miss rate is measurable.** Across 1,008 compactions the agent
+  re-issued 76 tool calls whose results compaction had evicted, 48 of them `read`
+  of the same path. That is the recompute cost of `span-family-drop` today, and it
+  is the number an archive-and-recall controller has to beat.
+- **Naive relevance eviction is worse than positional eviction on recall misses.**
+  The lexical scorer ends at the same size, re-prefills 9% less under a prefix cache
+  (it tends to evict large low-overlap units, so the first gap lands later) and
+  fragments slightly more under a segment cache, but it causes 23 more recomputes,
+  almost all `bash` results the agent came back for. Recency is a strong relevance
+  prior; a scorer that ignores it loses to the heuristic. This is the kind of
+  result the harness exists to produce before anything ships in mu-core.
+- The scorer that would be worth testing next is recency-weighted relevance with
+  the exchange-unit structure kept, scored against the pairwise labels the new
+  `EvictionCause`/`over_target_before` fields (mu PR #718) will start accruing.
 
 ## Running
 
@@ -165,4 +275,4 @@ falls back to `engine.MU_EVENTS` from `config.toml`.
 - Record eviction cause + margin in `CompactionDecision` so recall hits can be
   labelled (see the 2026-10-04 cc discussion); the `r=session` column then starts
   to move.
-- Chase the codex ratio with `prefix_hash` diffs on a fresh session.
+- After the codex fix lands, re-validate on fresh codex sessions (see above).
