@@ -56,6 +56,7 @@ compiled deps (`[tool.uv] no-install-package` fences duckdb; see pyproject.toml)
 | `run` | launcher — execs `.venv/bin/python`; fails loudly (with the creation commands) if the venv is missing |
 | `cc_telemetry.py` | cc transcript → mu-core `TaskTelemetry` (+ `tool_call`) JSONL, per session |
 | `cost.py` | read both sinks via stdlib `sqlite3`→polars, join `[rates]`, compute cost, split by `cost_kind`, hand-check |
+| `cache_sim.py` | prefix-cache simulator: replays each session's rope from the event log and measures prefill under flat-prefix vs segment-addressed caching — see `docs/cache_sim.md` |
 | `sample_data.py` | `build()` assembles the dashboard `DATA` contract from the sink; `./run sample_data.py` prints it as JSON |
 | `incidents.py` | parse the notes dir (`[incidents].dir`) of incident reports → dated timeline events (issue/positive + session_refs) for the Overview cost/degradation overlay |
 | `demo_data.py` | same contract shape, **fabricated** numbers — `MU_ANALYTICS_DEMO=1` uses it to render the screenshot above without exposing real usage |
