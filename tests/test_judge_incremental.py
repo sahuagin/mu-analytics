@@ -48,6 +48,22 @@ class AttemptKind(unittest.TestCase):
         self.assertFalse(run_judge.is_verdict(["not", "a", "dict"]))
         self.assertEqual(run_judge.attempt_kind(0, '{"a": 1}', None, {"a": 1}), "bad_envelope")
 
+    def test_required_provider_is_rank_zero_and_disables_fallthrough(self):
+        ladder = [("flashnext", "local"), ("remote", "fallback")]
+        self.assertEqual(
+            run_judge.constrain_ladder(ladder, required_provider="flashnext"),
+            [("flashnext", "local")],
+        )
+        with self.assertRaises(ValueError):
+            run_judge.constrain_ladder(ladder, required_provider="remote")
+        with self.assertRaises(ValueError):
+            run_judge.constrain_ladder([], required_provider="flashnext")
+
+    def test_single_rank_without_provider_constraint(self):
+        ladder = [("one", "a"), ("two", "b")]
+        self.assertEqual(run_judge.constrain_ladder(ladder, single_rank=True), [ladder[0]])
+        self.assertEqual(run_judge.constrain_ladder(ladder), ladder)
+
 
 class ClassifyFailure(unittest.TestCase):
     def test_structured_record_gives_one_line_per_rank_with_the_reason(self):

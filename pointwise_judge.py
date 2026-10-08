@@ -1,0 +1,411 @@
+#!/usr/bin/env python3
+"""Bounded, resumable pointwise judging over one explicitly named session.
+
+The existing ``engine.ev`` projection is the only input parser.  This program
+selects one session, renders its conversational events into stable numbered
+turns, packs bounded chunks, and commits each successful chunk verdict before
+advancing.  It deliberately does not enumerate sessions or fall through to a
+second provider.
+
+Example (operator chooses the trusted provider alias explicitly)::
+
+    ./run pointwise_judge.py --fleet mu --session daemon/session-1 \
+        --cls false_success --required-provider flashnext
+
+Development and CI use synthetic ``--events-glob`` inputs.  Never use a remote
+parent agent to run this over confidential sessions: verdicts and evidence are
+derived from the transcript too.
+"""
+
+from __future__ import annotations
+
+import argparse
+import dataclasses
+import hashlib
+import json
+import os
+import sqlite3
+import subprocess
+import sys
+import tempfile
+import time
+from collections.abc import Callable, Sequence
+
+import engine
+import panels
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+JUDGE = os.path.join(HERE, "behavior-judge", "scripts", "run_judge.py")
+PROMPT = os.path.join(HERE, "behavior-judge", "judge", "behavior-judge-system-prompt.txt")
+RUBRIC = os.path.join(HERE, "behavior-judge", "judge", "rubric.md")
+DEFAULT_STORE = os.path.join(HERE, "data", "pointwise.sqlite")
+PIPELINE_VERSION = "pointwise-v1"
+
+
+@dataclasses.dataclass(frozen=True)
+class Turn:
+    event_id: int
+    number: int
+    kind: str
+    tool_name: str | None
+    is_error: bool | None
+    body: str
+
+
+@dataclasses.dataclass(frozen=True)
+class Chunk:
+    index: int
+    first_event_id: int
+    last_event_id: int
+    text: str
+    content_hash: str
+
+
+# This is the same normalized conversation projection used by the dashboard.
+# It selects one session at the database boundary; the caller never receives
+# rows from another session and does not parse source JSONL itself.
+_ONE_SESSION_SQL = (
+    panels._CONV_SQL
+    + """
+SELECT id, kind, tool_name, is_error, body
+FROM conv
+WHERE fleet = ? AND key = ?
+ORDER BY ts, id"""
+)
+
+
+def load_turns(con, fleet: str, session_key: str) -> list[Turn]:
+    rows = con.execute(_ONE_SESSION_SQL, [fleet, session_key]).fetchall()
+    turns = []
+    for event_id, kind, tool_name, is_error, body in rows:
+        body = body or ""
+        if kind in ("user_message", "assistant_message_event") and not body.strip():
+            continue
+        turns.append(
+            Turn(
+                event_id=int(event_id),
+                number=len(turns) + 1,
+                kind=kind,
+                tool_name=tool_name,
+                is_error=is_error,
+                body=body,
+            )
+        )
+    return turns
+
+
+def _render_turn(turn: Turn, max_tool_chars: int) -> str:
+    if turn.kind == "user_message":
+        label = "USER"
+        body = turn.body
+    elif turn.kind == "assistant_message_event":
+        label = "ASSISTANT"
+        body = turn.body
+    elif turn.kind == "tool_call":
+        label = f"TOOL_CALL({turn.tool_name or 'tool'})"
+        body = turn.body[:max_tool_chars]
+    else:
+        label = f"TOOL_RESULT({'err' if turn.is_error else 'ok'})"
+        body = (turn.body or "(empty result)")[:max_tool_chars]
+    return f"[{turn.number:03}] {label}: {body}"
+
+
+def _utf8_len(text: str) -> int:
+    return len(text.encode("utf-8"))
+
+
+def _split_oversize(rendered: str, limit: int) -> list[str]:
+    """Split one exceptional oversized turn without breaking UTF-8."""
+    parts = []
+    rest = rendered
+    while rest:
+        raw = rest.encode("utf-8")
+        if len(raw) <= limit:
+            parts.append(rest)
+            break
+        cut = raw[:limit]
+        while cut:
+            try:
+                text = cut.decode("utf-8")
+                break
+            except UnicodeDecodeError as e:
+                cut = cut[: e.start]
+        if not cut:
+            raise ValueError("chunk byte limit is too small for one UTF-8 character")
+        parts.append(text)
+        rest = rest[len(text) :]
+    return parts
+
+
+def chunk_turns(
+    turns: Sequence[Turn], max_chunk_bytes: int, max_tool_chars: int = 1200
+) -> list[Chunk]:
+    """Pack complete turns when possible; only an oversized turn is split."""
+    if max_chunk_bytes < 64:
+        raise ValueError("max_chunk_bytes must be at least 64")
+    pieces: list[tuple[int, str]] = []
+    for turn in turns:
+        rendered = _render_turn(turn, max_tool_chars)
+        for part_no, part in enumerate(_split_oversize(rendered, max_chunk_bytes), 1):
+            if part_no > 1:
+                marker = f"[continuation of turn {turn.number}] "
+                room = max_chunk_bytes - _utf8_len(marker)
+                if room < 1:
+                    raise ValueError("max_chunk_bytes leaves no room after continuation marker")
+                # Re-split if the marker made this part too large.
+                subparts = _split_oversize(part, room)
+                pieces.extend((turn.event_id, marker + sub) for sub in subparts)
+            else:
+                pieces.append((turn.event_id, part))
+
+    packed: list[list[tuple[int, str]]] = []
+    current: list[tuple[int, str]] = []
+    size = 0
+    for event_id, text in pieces:
+        cost = _utf8_len(text) + (1 if current else 0)
+        if current and size + cost > max_chunk_bytes:
+            packed.append(current)
+            current, size = [], 0
+            cost = _utf8_len(text)
+        current.append((event_id, text))
+        size += cost
+    if current:
+        packed.append(current)
+
+    out = []
+    for index, rows in enumerate(packed):
+        text = "\n".join(row[1] for row in rows)
+        if _utf8_len(text) > max_chunk_bytes:
+            raise AssertionError("chunker exceeded its byte bound")
+        out.append(
+            Chunk(
+                index=index,
+                first_event_id=rows[0][0],
+                last_event_id=rows[-1][0],
+                text=text,
+                content_hash=hashlib.blake2b(text.encode(), digest_size=16).hexdigest(),
+            )
+        )
+    return out
+
+
+def analyzer_version(cls: str) -> str:
+    h = hashlib.blake2b(digest_size=16)
+    h.update(PIPELINE_VERSION.encode())
+    for path in (PROMPT, RUBRIC):
+        with open(path, "rb") as f:
+            h.update(f.read())
+    h.update(cls.encode())
+    return h.hexdigest()
+
+
+def source_version(turns: Sequence[Turn]) -> str:
+    h = hashlib.blake2b(digest_size=16)
+    for t in turns:
+        h.update(json.dumps(dataclasses.asdict(t), sort_keys=True).encode())
+        h.update(b"\n")
+    return h.hexdigest()
+
+
+class ResultStore:
+    def __init__(self, path: str):
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        self.db = sqlite3.connect(path)
+        self.db.execute(
+            """CREATE TABLE IF NOT EXISTS pointwise_result (
+                session_ref TEXT NOT NULL,
+                source_version TEXT NOT NULL,
+                chunk_index INTEGER NOT NULL,
+                first_event_id INTEGER NOT NULL,
+                last_event_id INTEGER NOT NULL,
+                chunk_hash TEXT NOT NULL,
+                analyzer_id TEXT NOT NULL,
+                analyzer_version TEXT NOT NULL,
+                target TEXT NOT NULL,
+                processed_at INTEGER NOT NULL,
+                verdict_json TEXT NOT NULL,
+                PRIMARY KEY (
+                    session_ref, chunk_index, first_event_id, last_event_id, chunk_hash,
+                    analyzer_id, analyzer_version, target
+                )
+            )"""
+        )
+        self.db.commit()
+
+    def contains(self, session_ref: str, chunk: Chunk, cls: str, version: str, target: str) -> bool:
+        return (
+            self.db.execute(
+                """SELECT 1 FROM pointwise_result
+                   WHERE session_ref=? AND chunk_index=? AND first_event_id=? AND last_event_id=?
+                     AND chunk_hash=? AND analyzer_id=? AND analyzer_version=? AND target=?""",
+                [
+                    session_ref,
+                    chunk.index,
+                    chunk.first_event_id,
+                    chunk.last_event_id,
+                    chunk.content_hash,
+                    cls,
+                    version,
+                    target,
+                ],
+            ).fetchone()
+            is not None
+        )
+
+    def record(
+        self,
+        session_ref: str,
+        src_version: str,
+        chunk: Chunk,
+        cls: str,
+        version: str,
+        target: str,
+        verdict: dict,
+    ) -> None:
+        self.db.execute(
+            """INSERT OR REPLACE INTO pointwise_result VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            [
+                session_ref,
+                src_version,
+                chunk.index,
+                chunk.first_event_id,
+                chunk.last_event_id,
+                chunk.content_hash,
+                cls,
+                version,
+                target,
+                int(time.time()),
+                json.dumps(verdict, sort_keys=True),
+            ],
+        )
+        self.db.commit()  # each successful chunk survives a later model failure
+
+    def close(self) -> None:
+        self.db.close()
+
+
+def resolve_target(role: str, required_provider: str) -> str:
+    r = subprocess.run(["agent-role", role, "0"], capture_output=True, text=True, timeout=20)
+    fields = r.stdout.strip().split()
+    if r.returncode or len(fields) < 2:
+        raise RuntimeError(f"role {role!r} rank 0 did not resolve")
+    provider, model = fields[:2]
+    if provider != required_provider:
+        raise RuntimeError(
+            f"role {role!r} rank 0 is {provider!r}, required {required_provider!r}; refusing dispatch"
+        )
+    return f"{provider}/{model}"
+
+
+def judge_chunk(chunk: Chunk, cls: str, role: str, required_provider: str, timeout: int) -> dict:
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+        f.write(chunk.text)
+        path = f.name
+    try:
+        cmd = [
+            sys.executable,
+            JUDGE,
+            "--transcript",
+            path,
+            "--cls",
+            cls,
+            "--role",
+            role,
+            "--single-rank",
+            "--require-provider",
+            required_provider,
+            "--timeout",
+            str(timeout),
+        ]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 90)
+        if r.returncode:
+            raise RuntimeError((r.stderr or r.stdout or "judge failed").strip().splitlines()[-1])
+        verdict = json.loads(r.stdout)
+        if not isinstance(verdict.get("occurred"), bool):
+            raise RuntimeError("judge returned no boolean verdict")
+        return verdict
+    finally:
+        os.unlink(path)
+
+
+def process_session(
+    con,
+    fleet: str,
+    session_key: str,
+    cls: str,
+    required_provider: str,
+    store: ResultStore,
+    max_chunk_bytes: int,
+    max_tool_chars: int,
+    timeout: int,
+    role: str = "judge",
+    judge: Callable[[Chunk, str, str, str, int], dict] = judge_chunk,
+    target_resolver: Callable[[str, str], str] = resolve_target,
+) -> dict:
+    turns = load_turns(con, fleet, session_key)
+    if not turns:
+        raise RuntimeError(f"no conversational events for {fleet}:{session_key}")
+    chunks = chunk_turns(turns, max_chunk_bytes, max_tool_chars)
+    version = analyzer_version(cls)
+    src_version = source_version(turns)
+    target = target_resolver(role, required_provider)
+    session_ref = f"{fleet}:{session_key}"
+    done = skipped = 0
+    for chunk in chunks:
+        if store.contains(session_ref, chunk, cls, version, target):
+            skipped += 1
+            continue
+        verdict = judge(chunk, cls, role, required_provider, timeout)
+        if verdict.get("judge_model") and verdict["judge_model"] != target:
+            raise RuntimeError(
+                f"judge reported target {verdict['judge_model']!r}, expected {target!r}"
+            )
+        store.record(session_ref, src_version, chunk, cls, version, target, verdict)
+        done += 1
+    return {"chunks": len(chunks), "judged": done, "already_done": skipped, "target": target}
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--fleet", choices=("mu", "cc"), required=True)
+    ap.add_argument("--session", required=True, help="exact normalized session key")
+    ap.add_argument("--cls", default="false_success", help="one rubric class")
+    ap.add_argument(
+        "--required-provider", required=True, help="trusted provider alias; fail closed"
+    )
+    ap.add_argument("--role", default="judge")
+    ap.add_argument("--max-chunk-bytes", type=int, default=65536)
+    ap.add_argument("--max-tool-chars", type=int, default=1200)
+    ap.add_argument("--timeout", type=int, default=900)
+    ap.add_argument("--store", default=DEFAULT_STORE)
+    ap.add_argument(
+        "--events-glob", help="explicit synthetic/test source instead of production snapshot"
+    )
+    args = ap.parse_args()
+
+    con = (
+        engine.connect(glob=args.events_glob, fleet=args.fleet)
+        if args.events_glob
+        else engine.connect()
+    )
+    store = ResultStore(os.path.expanduser(args.store))
+    try:
+        stats = process_session(
+            con,
+            args.fleet,
+            args.session,
+            args.cls,
+            args.required_provider,
+            store,
+            args.max_chunk_bytes,
+            args.max_tool_chars,
+            args.timeout,
+            args.role,
+        )
+    finally:
+        store.close()
+    print(json.dumps(stats, sort_keys=True))
+
+
+if __name__ == "__main__":
+    main()

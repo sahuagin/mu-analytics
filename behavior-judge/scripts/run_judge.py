@@ -93,6 +93,23 @@ def role_ladder(role):
     return ladder
 
 
+def constrain_ladder(ladder, required_provider=None, single_rank=False):
+    """Apply the egress boundary before any transcript is opened or dispatched.
+
+    Requiring a provider also disables fallthrough: a later rank is a different
+    egress destination even when rank 0 was configured correctly.
+    """
+    if required_provider:
+        if not ladder:
+            raise ValueError("role did not resolve")
+        if ladder[0][0] != required_provider:
+            raise ValueError(
+                f"rank 0 resolved to provider {ladder[0][0]!r}, required {required_provider!r}"
+            )
+        return ladder[:1]
+    return ladder[:1] if single_rank else ladder
+
+
 def _dispatch_lib():
     """Path to the canonical dispatcher (mu/scripts/lib/agent-dispatch.sh), preferring
     the ~/.local/bin symlink so this isn't coupled to the mu repo's location."""
@@ -260,12 +277,23 @@ def main():
         "APIs (gpt-5.5/opus) so parallel workers actually overlap. NOT the calibrated qwen; "
         "for the historical backfill. The runner stamps which model judged each verdict.",
     )
+    ap.add_argument(
+        "--single-rank",
+        action="store_true",
+        help="try only rank 0; never fall through to another provider",
+    )
+    ap.add_argument(
+        "--require-provider",
+        help="fail closed at rank 0 unless it resolves to this provider alias; disables fallthrough",
+    )
     args = ap.parse_args()
 
     sys_t = open(os.path.join(JUDGE, "behavior-judge-system-prompt.txt")).read()
     system = sys_t.replace("{CLASS_RUBRIC}", class_rubric(args.cls))
 
     if args.host:  # direct/standalone mode
+        if args.require_provider or args.single_rank:
+            sys.exit("judge: --host cannot be combined with role-based provider constraints")
         model = args.model or "qwen3.6:35b-a3b-q8_0"
         text = direct_ollama(args.host, model, system, args.transcript, args.timeout)
         verdict = coerce_json(text)
@@ -279,6 +307,10 @@ def main():
         return
 
     ladder = role_ladder(args.role)
+    try:
+        ladder = constrain_ladder(ladder, args.require_provider, args.single_rank)
+    except ValueError as e:
+        sys.exit(f"judge: role '{args.role}' {e}; refusing dispatch")
     if args.skip_ollama:
         ladder = [(p, m) for p, m in ladder if not p.startswith("ollama")]
     if not ladder:
