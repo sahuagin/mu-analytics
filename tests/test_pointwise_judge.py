@@ -83,8 +83,8 @@ class TestPointwiseJudge(unittest.TestCase):
     def test_commits_each_chunk_and_rerun_skips_it(self):
         calls = []
 
-        def fake_judge(chunk, cls, role, required_provider, timeout):
-            calls.append(chunk.index)
+        def fake_judge(chunk, cls, role, required_provider, timeout, verification_retry=False):
+            calls.append((chunk.index, cls, verification_retry))
             return {
                 "behavior": cls,
                 "occurred": False,
@@ -146,13 +146,14 @@ class TestPointwiseJudge(unittest.TestCase):
         finally:
             store.close()
 
-        self.assertEqual(first["judged"], 1)
+        self.assertEqual(first["accepted"], 1)
+        self.assertEqual(first["model_calls"], 1)
         self.assertEqual(first["completed_before"], 0)
         self.assertEqual(first["remaining"], first["chunks"] - 1)
-        self.assertEqual(second["judged"], first["chunks"] - 1)
+        self.assertEqual(second["accepted"], first["chunks"] - 1)
         self.assertEqual(second["completed_before"], 1)
         self.assertEqual(second["remaining"], 0)
-        self.assertEqual(third["judged"], 0)
+        self.assertEqual(third["accepted"], 0)
         self.assertEqual(third["completed_before"], first["chunks"])
         self.assertEqual(third["remaining"], 0)
         self.assertEqual(calls, second_calls)
@@ -166,6 +167,143 @@ class TestPointwiseJudge(unittest.TestCase):
         self.assertEqual(len(rows), first["chunks"])
         self.assertTrue(all(row[1] == "flashnext/test-model" for row in rows))
         self.assertTrue(all(json.loads(row[2])["occurred"] is False for row in rows))
+
+    def test_profile_runs_classes_inside_each_selected_chunk(self):
+        calls = []
+
+        def fake(chunk, cls, role, provider, timeout, retry=False):
+            calls.append((chunk.index, cls, retry))
+            return {
+                "behavior": cls,
+                "occurred": False,
+                "evidence": [],
+                "judge_model": "flashnext/m",
+            }
+
+        store = pw.ResultStore(os.path.join(self.tmp.name, "profile.sqlite"))
+        try:
+            stats = pw.process_session(
+                self.con,
+                "mu",
+                "txdaemon:s1",
+                "false_success",
+                "flashnext",
+                store,
+                90,
+                20,
+                1,
+                limit_chunks=1,
+                judge=fake,
+                target_resolver=lambda _r, _p: "flashnext/m",
+                pointwise_profile=True,
+            )
+        finally:
+            store.close()
+        self.assertEqual([c[1] for c in calls], list(pw.POINTWISE_CLASSES))
+        self.assertTrue(all(c[0] == 0 and c[2] is False for c in calls))
+        self.assertEqual(stats["accepted"], len(pw.POINTWISE_CLASSES))
+        self.assertEqual(stats["analyzers"], len(pw.POINTWISE_CLASSES) + 1)
+        self.assertEqual(stats["units_total"], stats["chunks"] * len(pw.POINTWISE_CLASSES) + 1)
+
+    def test_positive_unverified_evidence_retries_then_accepts(self):
+        calls = []
+
+        def fake(chunk, cls, role, provider, timeout, retry=False):
+            calls.append(retry)
+            return {
+                "behavior": cls,
+                "occurred": True,
+                "evidence": [{"quote": "a"}] if retry else [{"quote": "a"}, {"quote": "b"}],
+                "n_evidence_verified": 1,
+                "judge_model": "flashnext/m",
+            }
+
+        db = os.path.join(self.tmp.name, "retry.sqlite")
+        store = pw.ResultStore(db)
+        try:
+            stats = pw.process_session(
+                self.con,
+                "mu",
+                "txdaemon:s1",
+                "false_success",
+                "flashnext",
+                store,
+                8192,
+                20,
+                1,
+                judge=fake,
+                target_resolver=lambda _r, _p: "flashnext/m",
+            )
+        finally:
+            store.close()
+        self.assertEqual(calls, [False, True])
+        self.assertEqual(stats["accepted"], 1)
+        self.assertEqual(stats["model_calls"], 2)
+        raw = sqlite3.connect(db).execute("SELECT verdict_json FROM pointwise_result").fetchone()[0]
+        verdict = json.loads(raw)
+        self.assertEqual(verdict["verification_disposition"], "accepted_after_retry")
+        self.assertEqual(verdict["initial_unverified_count"], 1)
+
+    def test_failed_positive_retry_is_local_quarantine_and_terminal(self):
+        calls = []
+
+        def fake(chunk, cls, role, provider, timeout, retry=False):
+            calls.append(retry)
+            return {
+                "behavior": cls,
+                "occurred": True,
+                "evidence": [{"quote": "a"}, {"quote": "b"}],
+                "n_evidence_verified": 1,
+                "judge_model": "flashnext/m",
+            }
+
+        db = os.path.join(self.tmp.name, "quarantine.sqlite")
+        store = pw.ResultStore(db)
+        try:
+            first = pw.process_session(
+                self.con,
+                "mu",
+                "txdaemon:s1",
+                "false_success",
+                "flashnext",
+                store,
+                8192,
+                20,
+                1,
+                judge=fake,
+                target_resolver=lambda _r, _p: "flashnext/m",
+            )
+            second = pw.process_session(
+                self.con,
+                "mu",
+                "txdaemon:s1",
+                "false_success",
+                "flashnext",
+                store,
+                8192,
+                20,
+                1,
+                judge=fake,
+                target_resolver=lambda _r, _p: "flashnext/m",
+            )
+        finally:
+            store.close()
+        self.assertEqual(calls, [False, True])
+        self.assertEqual(first["quarantined"], 1)
+        self.assertEqual(first["accepted"], 0)
+        self.assertEqual(second["model_calls"], 0)
+        con = sqlite3.connect(db)
+        try:
+            row = con.execute(
+                "SELECT category, reason_json, egress_allowed FROM pointwise_quarantine"
+            ).fetchone()
+            accepted = con.execute("SELECT count(*) FROM pointwise_result").fetchone()[0]
+        finally:
+            con.close()
+        self.assertEqual(accepted, 0)
+        self.assertEqual(row[0], "positive_unverified_evidence_after_retry")
+        self.assertEqual(json.loads(row[1])["egress_default"], "deny")
+        self.assertEqual(row[2], 0)
 
 
 if __name__ == "__main__":

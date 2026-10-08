@@ -64,6 +64,18 @@ class AttemptKind(unittest.TestCase):
         self.assertEqual(run_judge.constrain_ladder(ladder, single_rank=True), [ladder[0]])
         self.assertEqual(run_judge.constrain_ladder(ladder), ladder)
 
+    def test_rubric_at_tail_keeps_transcript_prefix_stable_across_classes(self):
+        template = "system {CLASS_RUBRIC}"
+        transcript = "[001] USER: same chunk"
+        s1, u1 = run_judge.build_prompt_parts(template, "rubric one", transcript, True)
+        s2, u2 = run_judge.build_prompt_parts(template, "rubric two", transcript, True)
+        self.assertEqual(s1, s2)
+        self.assertTrue(u1.startswith(transcript))
+        self.assertTrue(u2.startswith(transcript))
+        self.assertIn("rubric one", u1)
+        self.assertIn("rubric two", u2)
+        self.assertNotEqual(u1, u2)
+
 
 class ClassifyFailure(unittest.TestCase):
     def test_structured_record_gives_one_line_per_rank_with_the_reason(self):

@@ -44,6 +44,15 @@ def class_rubric(cls):
 
 
 ROLE_DEFAULT = "judge"
+VERIFICATION_RETRY_NOTE = """
+
+--- VERIFICATION RETRY (instructions, not transcript evidence) ---
+Your previous positive verdict contained one or more evidence quotes that did not
+match the rendered transcript verbatim. Re-evaluate the same behavior. If it
+occurred, copy every evidence quote exactly from the transcript; do not
+paraphrase, shorten, normalize, or insert ellipses. Return the normal JSON
+verdict only.
+"""
 
 
 def coerce_json(text):
@@ -217,6 +226,21 @@ def attempt_kind(rc, text, verdict, parsed=None):
     return "no_json" if text else "empty_reply"
 
 
+def build_prompt_parts(system_template, rubric, transcript, rubric_at_tail=False):
+    """Return system/user text; tail mode keeps the transcript prefix class-stable."""
+    if rubric_at_tail:
+        system = system_template.replace(
+            "{CLASS_RUBRIC}", "The behavior definition is supplied after the rendered transcript."
+        )
+        user = (
+            transcript
+            + "\n\n--- BEHAVIOR TO JUDGE (instructions, not transcript evidence) ---\n"
+            + rubric
+        )
+        return system, user
+    return system_template.replace("{CLASS_RUBRIC}", rubric), transcript
+
+
 def verify_evidence(verdict, transcript_path):
     """Stamp n_evidence_verified: how many evidence quotes literally appear in the
     transcript (whitespace-normalized substring). The verbatim-evidence requirement is
@@ -286,25 +310,54 @@ def main():
         "--require-provider",
         help="fail closed at rank 0 unless it resolves to this provider alias; disables fallthrough",
     )
+    ap.add_argument(
+        "--rubric-at-tail",
+        action="store_true",
+        help="append the class rubric after the transcript so multiple classes share a cache prefix",
+    )
+    ap.add_argument(
+        "--verification-retry",
+        action="store_true",
+        help="append an exact-quote correction after the transcript; evidence still verifies against transcript only",
+    )
     args = ap.parse_args()
 
     sys_t = open(os.path.join(JUDGE, "behavior-judge-system-prompt.txt")).read()
-    system = sys_t.replace("{CLASS_RUBRIC}", class_rubric(args.cls))
+    transcript = open(args.transcript, errors="ignore").read()
+    system, user_prompt = build_prompt_parts(
+        sys_t, class_rubric(args.cls), transcript, args.rubric_at_tail
+    )
+    if args.verification_retry:
+        # This belongs in the provider prompt, not the transcript file: evidence
+        # verification must never accept text from our retry instruction.
+        user_prompt += VERIFICATION_RETRY_NOTE
+
+    prompt_path = args.transcript
+    prompt_tmp = None
 
     if args.host:  # direct/standalone mode
-        if args.require_provider or args.single_rank:
-            sys.exit("judge: --host cannot be combined with role-based provider constraints")
-        model = args.model or "qwen3.6:35b-a3b-q8_0"
-        text = direct_ollama(args.host, model, system, args.transcript, args.timeout)
-        verdict = coerce_json(text)
-        if verdict is None:
-            # keep the raw reply visible for debugging, but fail loudly — an
-            # unparseable verdict must not read as a clean run.
-            print(text)
-            sys.exit(f"judge: ollama/{model} returned no parseable JSON verdict")
-        verdict["judge_model"] = f"ollama/{model}"
-        print(json.dumps(verify_evidence(verdict, args.transcript)))
-        return
+        try:
+            if args.rubric_at_tail or args.verification_retry:
+                prompt_tmp = tempfile.NamedTemporaryFile("w", suffix=".prompt", delete=False)
+                prompt_tmp.write(user_prompt)
+                prompt_tmp.close()
+                prompt_path = prompt_tmp.name
+            if args.require_provider or args.single_rank:
+                sys.exit("judge: --host cannot be combined with role-based provider constraints")
+            model = args.model or "qwen3.6:35b-a3b-q8_0"
+            text = direct_ollama(args.host, model, system, prompt_path, args.timeout)
+            verdict = coerce_json(text)
+            if verdict is None:
+                # keep the raw reply visible for debugging, but fail loudly — an
+                # unparseable verdict must not read as a clean run.
+                print(text)
+                sys.exit(f"judge: ollama/{model} returned no parseable JSON verdict")
+            verdict["judge_model"] = f"ollama/{model}"
+            print(json.dumps(verify_evidence(verdict, args.transcript)))
+            return
+        finally:
+            if prompt_tmp:
+                os.unlink(prompt_path)
 
     ladder = role_ladder(args.role)
     try:
@@ -323,6 +376,12 @@ def main():
             f"judge: role '{args.role}' {why}. Pass --host/--model for a direct standalone call."
         )
 
+    if args.rubric_at_tail or args.verification_retry:
+        prompt_tmp = tempfile.NamedTemporaryFile("w", suffix=".prompt", delete=False)
+        prompt_tmp.write(user_prompt)
+        prompt_tmp.close()
+        prompt_path = prompt_tmp.name
+
     # The class system-prompt goes to a temp file for --append-system-prompt.
     with tempfile.NamedTemporaryFile("w", suffix=".sysprompt", delete=False) as sf:
         sf.write(system)
@@ -331,7 +390,7 @@ def main():
     try:
         for provider, model in ladder:
             t0 = time.time()
-            text, rc, reason = dispatch(provider, model, sys_file, args.transcript, args.timeout)
+            text, rc, reason = dispatch(provider, model, sys_file, prompt_path, args.timeout)
             parsed = coerce_json(text) if rc == 0 and text else None
             verdict = parsed if is_verdict(parsed) else None
             secs = round(time.time() - t0)
@@ -374,6 +433,8 @@ def main():
         sys.exit(f"judge: no target in role '{args.role}' produced a verdict — {why}")
     finally:
         os.unlink(sys_file)
+        if prompt_tmp:
+            os.unlink(prompt_path)
 
 
 if __name__ == "__main__":
