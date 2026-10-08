@@ -9,7 +9,7 @@ second provider.
 
 Example (operator chooses the trusted provider alias explicitly)::
 
-    ./run pointwise_judge.py --fleet mu --session daemon/session-1 \
+    ./run pointwise_judge.py --fleet mu --session daemon:session-1 \
         --cls false_success --required-provider flashnext
 
 Development and CI use synthetic ``--events-glob`` inputs.  Never use a remote
@@ -61,17 +61,18 @@ class Chunk:
     content_hash: str
 
 
-# This is the same normalized conversation projection used by the dashboard.
-# It selects one session at the database boundary; the caller never receives
-# rows from another session and does not parse source JSONL itself.
-_ONE_SESSION_SQL = (
-    panels._CONV_SQL
-    + """
-SELECT id, kind, tool_name, is_error, body
-FROM conv
-WHERE fleet = ? AND key = ?
-ORDER BY ts, id"""
-)
+# This uses the normalized ``ev.session`` key directly.  It deliberately does
+# not use the dashboard's display-id aliases: callers identify exactly one
+# engine session and the database boundary returns no rows from another.
+_ONE_SESSION_SQL = f"""
+SELECT e.id, e.kind,
+       json_extract_string(e.payload,'$.name')               AS tool_name,
+       CAST(json_extract(e.payload,'$.is_error') AS BOOLEAN) AS is_error,
+       {panels._TX_BODY} AS body
+FROM ev e
+WHERE e.fleet = ? AND e.session = ? AND e.kind IN {panels._TX_KINDS}
+ORDER BY e.ts, e.id
+"""
 
 
 def load_turns(con, fleet: str, session_key: str) -> list[Turn]:
@@ -328,6 +329,27 @@ def judge_chunk(chunk: Chunk, cls: str, role: str, required_provider: str, timeo
         os.unlink(path)
 
 
+def session_plan(con, fleet: str, session_key: str, max_chunk_bytes: int, max_tool_chars: int):
+    """Return the bounded work shape without transcript text or model access."""
+    turns = load_turns(con, fleet, session_key)
+    if not turns:
+        raise RuntimeError(f"no conversational events for {fleet}:{session_key}")
+    chunks = chunk_turns(turns, max_chunk_bytes, max_tool_chars)
+    sizes = [_utf8_len(c.text) for c in chunks]
+    return (
+        turns,
+        chunks,
+        {
+            "session_ref": f"{fleet}:{session_key}",
+            "turns": len(turns),
+            "chunks": len(chunks),
+            "chunk_bytes_total": sum(sizes),
+            "chunk_bytes_min": min(sizes),
+            "chunk_bytes_max": max(sizes),
+        },
+    )
+
+
 def process_session(
     con,
     fleet: str,
@@ -338,23 +360,24 @@ def process_session(
     max_chunk_bytes: int,
     max_tool_chars: int,
     timeout: int,
+    limit_chunks: int = 0,
     role: str = "judge",
     judge: Callable[[Chunk, str, str, str, int], dict] = judge_chunk,
     target_resolver: Callable[[str, str], str] = resolve_target,
 ) -> dict:
-    turns = load_turns(con, fleet, session_key)
-    if not turns:
-        raise RuntimeError(f"no conversational events for {fleet}:{session_key}")
-    chunks = chunk_turns(turns, max_chunk_bytes, max_tool_chars)
+    turns, chunks, plan = session_plan(con, fleet, session_key, max_chunk_bytes, max_tool_chars)
     version = analyzer_version(cls)
     src_version = source_version(turns)
     target = target_resolver(role, required_provider)
     session_ref = f"{fleet}:{session_key}"
-    done = skipped = 0
-    for chunk in chunks:
-        if store.contains(session_ref, chunk, cls, version, target):
-            skipped += 1
-            continue
+    completed = [
+        chunk for chunk in chunks if store.contains(session_ref, chunk, cls, version, target)
+    ]
+    complete_hashes = {(c.index, c.content_hash) for c in completed}
+    pending = [c for c in chunks if (c.index, c.content_hash) not in complete_hashes]
+    selected = pending[:limit_chunks] if limit_chunks > 0 else pending
+    done = 0
+    for chunk in selected:
         verdict = judge(chunk, cls, role, required_provider, timeout)
         if verdict.get("judge_model") and verdict["judge_model"] != target:
             raise RuntimeError(
@@ -362,7 +385,14 @@ def process_session(
             )
         store.record(session_ref, src_version, chunk, cls, version, target, verdict)
         done += 1
-    return {"chunks": len(chunks), "judged": done, "already_done": skipped, "target": target}
+    return {
+        **plan,
+        "completed_before": len(completed),
+        "pending_before": len(pending),
+        "judged": done,
+        "remaining": len(pending) - done,
+        "target": target,
+    }
 
 
 def main() -> None:
@@ -371,12 +401,18 @@ def main() -> None:
     ap.add_argument("--session", required=True, help="exact normalized session key")
     ap.add_argument("--cls", default="false_success", help="one rubric class")
     ap.add_argument(
-        "--required-provider", required=True, help="trusted provider alias; fail closed"
+        "--required-provider", help="trusted provider alias; fail closed (required to judge)"
     )
     ap.add_argument("--role", default="judge")
     ap.add_argument("--max-chunk-bytes", type=int, default=65536)
     ap.add_argument("--max-tool-chars", type=int, default=1200)
     ap.add_argument("--timeout", type=int, default=900)
+    ap.add_argument("--limit-chunks", type=int, default=0, help="judge at most N pending chunks")
+    ap.add_argument(
+        "--plan-only",
+        action="store_true",
+        help="print aggregate chunk metadata; do not resolve a provider or open a result store",
+    )
     ap.add_argument("--store", default=DEFAULT_STORE)
     ap.add_argument(
         "--events-glob", help="explicit synthetic/test source instead of production snapshot"
@@ -388,6 +424,15 @@ def main() -> None:
         if args.events_glob
         else engine.connect()
     )
+    if args.plan_only:
+        _turns, _chunks, plan = session_plan(
+            con, args.fleet, args.session, args.max_chunk_bytes, args.max_tool_chars
+        )
+        print(json.dumps(plan, sort_keys=True))
+        return
+    if not args.required_provider:
+        ap.error("--required-provider is required unless --plan-only is used")
+
     store = ResultStore(os.path.expanduser(args.store))
     try:
         stats = process_session(
@@ -400,6 +445,7 @@ def main() -> None:
             args.max_chunk_bytes,
             args.max_tool_chars,
             args.timeout,
+            args.limit_chunks,
             args.role,
         )
     finally:
