@@ -275,7 +275,17 @@ def transcript_connection(tmpdir, cc_session="txcc-0000-1111"):
             f.write(json.dumps(e) + "\n")
     return engine.connect(
         sources=[
-            (os.path.join(tmpdir, "events", "*", "*.jsonl"), "mu", engine._MU_DAEMON),
-            (os.path.join(tmpdir, "cc-events", "*", "*.jsonl"), "cc", engine._CC_DAEMON),
+            (
+                os.path.join(tmpdir, "events", "*", "*.jsonl"),
+                "mu",
+                engine._MU_DAEMON,
+                engine._MU_SESSION,
+            ),
+            (
+                os.path.join(tmpdir, "cc-events", "*", "*.jsonl"),
+                "cc",
+                engine._CC_DAEMON,
+                engine._CC_SESSION,
+            ),
         ]
     )
