@@ -23,7 +23,14 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 RENDER = os.path.join(HERE, "render_transcript.py")
 JUDGE = os.path.join(HERE, "run_judge.py")
-CLASSES = ["false_success", "map_as_terrain", "scope_overreach", "relitigation", "dismissiveness"]
+CLASSES = [
+    "false_success",
+    "map_as_terrain",
+    "scope_overreach",
+    "correction_overgeneralization",
+    "relitigation",
+    "dismissiveness",
+]
 
 
 def resolve_path(ref, host):

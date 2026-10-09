@@ -50,6 +50,7 @@ CLASSES = [
     "false_success",
     "map_as_terrain",
     "scope_overreach",
+    "correction_overgeneralization",
     "relitigation",
     "dismissiveness",
     # v2 (degradation-signature sweep) — in the default list so the daily cron
