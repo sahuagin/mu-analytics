@@ -39,7 +39,16 @@ JUDGE = os.path.join(HERE, "behavior-judge", "scripts", "run_judge.py")
 PROMPT = os.path.join(HERE, "behavior-judge", "judge", "behavior-judge-system-prompt.txt")
 RUBRIC = os.path.join(HERE, "behavior-judge", "judge", "rubric.md")
 DEFAULT_STORE = os.path.join(HERE, "data", "pointwise.sqlite")
-PIPELINE_VERSION = "pointwise-v1"
+PIPELINE_VERSION = "pointwise-v2"
+POINTWISE_CLASSES = (
+    "false_success",
+    "map_as_terrain",
+    "scope_overreach",
+    "dismissiveness",
+    "outcome_prediction",
+)
+FINAL_CHUNK_CLASSES = ("performative_closing",)
+SESSION_WIDE_CLASSES = ("relitigation", "rule_echo")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -231,27 +240,66 @@ class ResultStore:
                 )
             )"""
         )
+        self.db.execute(
+            """CREATE TABLE IF NOT EXISTS pointwise_quarantine (
+                session_ref TEXT NOT NULL,
+                source_version TEXT NOT NULL,
+                chunk_index INTEGER NOT NULL,
+                first_event_id INTEGER NOT NULL,
+                last_event_id INTEGER NOT NULL,
+                chunk_hash TEXT NOT NULL,
+                analyzer_id TEXT NOT NULL,
+                analyzer_version TEXT NOT NULL,
+                target TEXT NOT NULL,
+                quarantined_at INTEGER NOT NULL,
+                category TEXT NOT NULL,
+                reason_json TEXT NOT NULL,
+                initial_verdict_json TEXT NOT NULL,
+                retry_verdict_json TEXT NOT NULL,
+                egress_allowed INTEGER NOT NULL DEFAULT 0 CHECK (egress_allowed IN (0,1)),
+                resolution TEXT,
+                resolved_at INTEGER,
+                PRIMARY KEY (
+                    session_ref, chunk_index, first_event_id, last_event_id, chunk_hash,
+                    analyzer_id, analyzer_version, target
+                )
+            )"""
+        )
         self.db.commit()
 
+    @staticmethod
+    def _key_values(session_ref, chunk, cls, version, target):
+        return [
+            session_ref,
+            chunk.index,
+            chunk.first_event_id,
+            chunk.last_event_id,
+            chunk.content_hash,
+            cls,
+            version,
+            target,
+        ]
+
+    def status(self, session_ref: str, chunk: Chunk, cls: str, version: str, target: str):
+        key = self._key_values(session_ref, chunk, cls, version, target)
+        if self.db.execute(
+            """SELECT 1 FROM pointwise_result
+               WHERE session_ref=? AND chunk_index=? AND first_event_id=? AND last_event_id=?
+                 AND chunk_hash=? AND analyzer_id=? AND analyzer_version=? AND target=?""",
+            key,
+        ).fetchone():
+            return "accepted"
+        if self.db.execute(
+            """SELECT 1 FROM pointwise_quarantine
+               WHERE session_ref=? AND chunk_index=? AND first_event_id=? AND last_event_id=?
+                 AND chunk_hash=? AND analyzer_id=? AND analyzer_version=? AND target=?""",
+            key,
+        ).fetchone():
+            return "quarantined"
+        return None
+
     def contains(self, session_ref: str, chunk: Chunk, cls: str, version: str, target: str) -> bool:
-        return (
-            self.db.execute(
-                """SELECT 1 FROM pointwise_result
-                   WHERE session_ref=? AND chunk_index=? AND first_event_id=? AND last_event_id=?
-                     AND chunk_hash=? AND analyzer_id=? AND analyzer_version=? AND target=?""",
-                [
-                    session_ref,
-                    chunk.index,
-                    chunk.first_event_id,
-                    chunk.last_event_id,
-                    chunk.content_hash,
-                    cls,
-                    version,
-                    target,
-                ],
-            ).fetchone()
-            is not None
-        )
+        return self.status(session_ref, chunk, cls, version, target) is not None
 
     def record(
         self,
@@ -281,6 +329,45 @@ class ResultStore:
         )
         self.db.commit()  # each successful chunk survives a later model failure
 
+    def quarantine(
+        self,
+        session_ref: str,
+        src_version: str,
+        chunk: Chunk,
+        cls: str,
+        version: str,
+        target: str,
+        category: str,
+        reason: dict,
+        initial: dict,
+        retry: dict,
+    ) -> None:
+        self.db.execute(
+            """INSERT OR REPLACE INTO pointwise_quarantine
+               (session_ref, source_version, chunk_index, first_event_id, last_event_id,
+                chunk_hash, analyzer_id, analyzer_version, target, quarantined_at,
+                category, reason_json, initial_verdict_json, retry_verdict_json,
+                egress_allowed, resolution, resolved_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,NULL,NULL)""",
+            [
+                session_ref,
+                src_version,
+                chunk.index,
+                chunk.first_event_id,
+                chunk.last_event_id,
+                chunk.content_hash,
+                cls,
+                version,
+                target,
+                int(time.time()),
+                category,
+                json.dumps(reason, sort_keys=True),
+                json.dumps(initial, sort_keys=True),
+                json.dumps(retry, sort_keys=True),
+            ],
+        )
+        self.db.commit()
+
     def close(self) -> None:
         self.db.close()
 
@@ -298,7 +385,14 @@ def resolve_target(role: str, required_provider: str) -> str:
     return f"{provider}/{model}"
 
 
-def judge_chunk(chunk: Chunk, cls: str, role: str, required_provider: str, timeout: int) -> dict:
+def judge_chunk(
+    chunk: Chunk,
+    cls: str,
+    role: str,
+    required_provider: str,
+    timeout: int,
+    verification_retry: bool = False,
+) -> dict:
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
         f.write(chunk.text)
         path = f.name
@@ -315,9 +409,12 @@ def judge_chunk(chunk: Chunk, cls: str, role: str, required_provider: str, timeo
             "--single-rank",
             "--require-provider",
             required_provider,
+            "--rubric-at-tail",
             "--timeout",
             str(timeout),
         ]
+        if verification_retry:
+            cmd.append("--verification-retry")
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 90)
         if r.returncode:
             raise RuntimeError((r.stderr or r.stdout or "judge failed").strip().splitlines()[-1])
@@ -327,6 +424,26 @@ def judge_chunk(chunk: Chunk, cls: str, role: str, required_provider: str, timeo
         return verdict
     finally:
         os.unlink(path)
+
+
+def evidence_counts(verdict: dict) -> tuple[int, int]:
+    claimed = len(verdict.get("evidence") or [])
+    verified = int(verdict.get("n_evidence_verified") or 0)
+    return claimed, verified
+
+
+def positive_evidence_verified(verdict: dict) -> bool:
+    claimed, verified = evidence_counts(verdict)
+    return verdict.get("occurred") is not True or (claimed > 0 and verified == claimed)
+
+
+def classes_for_chunk(index: int, n_chunks: int, profile: bool, single_cls: str):
+    if not profile:
+        return (single_cls,)
+    classes = list(POINTWISE_CLASSES)
+    if index == n_chunks - 1:
+        classes.extend(FINAL_CHUNK_CLASSES)
+    return tuple(classes)
 
 
 def session_plan(con, fleet: str, session_key: str, max_chunk_bytes: int, max_tool_chars: int):
@@ -362,35 +479,113 @@ def process_session(
     timeout: int,
     limit_chunks: int = 0,
     role: str = "judge",
-    judge: Callable[[Chunk, str, str, str, int], dict] = judge_chunk,
+    judge: Callable[..., dict] = judge_chunk,
     target_resolver: Callable[[str, str], str] = resolve_target,
+    pointwise_profile: bool = False,
 ) -> dict:
     turns, chunks, plan = session_plan(con, fleet, session_key, max_chunk_bytes, max_tool_chars)
-    version = analyzer_version(cls)
     src_version = source_version(turns)
     target = target_resolver(role, required_provider)
     session_ref = f"{fleet}:{session_key}"
-    completed = [
-        chunk for chunk in chunks if store.contains(session_ref, chunk, cls, version, target)
-    ]
-    complete_hashes = {(c.index, c.content_hash) for c in completed}
-    pending = [c for c in chunks if (c.index, c.content_hash) not in complete_hashes]
-    selected = pending[:limit_chunks] if limit_chunks > 0 else pending
-    done = 0
+    versions = {
+        name: analyzer_version(name)
+        for chunk in chunks
+        for name in classes_for_chunk(chunk.index, len(chunks), pointwise_profile, cls)
+    }
+
+    terminal = {}
+    pending_by_chunk = {}
+    for chunk in chunks:
+        pending = []
+        for name in classes_for_chunk(chunk.index, len(chunks), pointwise_profile, cls):
+            state = store.status(session_ref, chunk, name, versions[name], target)
+            terminal[(chunk.index, name)] = state
+            if state is None:
+                pending.append(name)
+        if pending:
+            pending_by_chunk[chunk.index] = pending
+
+    pending_chunks = [c for c in chunks if c.index in pending_by_chunk]
+    selected = pending_chunks[:limit_chunks] if limit_chunks > 0 else pending_chunks
+    accepted = quarantined = model_calls = 0
     for chunk in selected:
-        verdict = judge(chunk, cls, role, required_provider, timeout)
-        if verdict.get("judge_model") and verdict["judge_model"] != target:
-            raise RuntimeError(
-                f"judge reported target {verdict['judge_model']!r}, expected {target!r}"
+        for name in pending_by_chunk[chunk.index]:
+            initial = judge(chunk, name, role, required_provider, timeout, False)
+            model_calls += 1
+            if initial.get("judge_model") and initial["judge_model"] != target:
+                raise RuntimeError(
+                    f"judge reported target {initial['judge_model']!r}, expected {target!r}"
+                )
+
+            initial_claimed, initial_verified = evidence_counts(initial)
+            if initial.get("occurred") is True and not positive_evidence_verified(initial):
+                retry = judge(chunk, name, role, required_provider, timeout, True)
+                model_calls += 1
+                if retry.get("judge_model") and retry["judge_model"] != target:
+                    raise RuntimeError(
+                        f"judge reported target {retry['judge_model']!r}, expected {target!r}"
+                    )
+                retry_claimed, retry_verified = evidence_counts(retry)
+                if not positive_evidence_verified(retry):
+                    store.quarantine(
+                        session_ref,
+                        src_version,
+                        chunk,
+                        name,
+                        versions[name],
+                        target,
+                        "positive_unverified_evidence_after_retry",
+                        {
+                            "initial_claimed": initial_claimed,
+                            "initial_verified": initial_verified,
+                            "retry_claimed": retry_claimed,
+                            "retry_verified": retry_verified,
+                            "egress_default": "deny",
+                        },
+                        initial,
+                        retry,
+                    )
+                    quarantined += 1
+                    continue
+                retry["verification_disposition"] = "accepted_after_retry"
+                retry["verification_attempts"] = 2
+                retry["initial_unverified_count"] = initial_claimed - initial_verified
+                verdict = retry
+            else:
+                verdict = initial
+                verdict["verification_attempts"] = 1
+                verdict["verification_disposition"] = (
+                    "negative_with_unverified_evidence"
+                    if initial.get("occurred") is False and initial_verified < initial_claimed
+                    else "accepted"
+                )
+
+            store.record(
+                session_ref,
+                src_version,
+                chunk,
+                name,
+                versions[name],
+                target,
+                verdict,
             )
-        store.record(session_ref, src_version, chunk, cls, version, target, verdict)
-        done += 1
+            accepted += 1
+
+    completed_before = sum(state is not None for state in terminal.values())
+    quarantined_before = sum(state == "quarantined" for state in terminal.values())
+    units_total = len(terminal)
+    processed = accepted + quarantined
     return {
         **plan,
-        "completed_before": len(completed),
-        "pending_before": len(pending),
-        "judged": done,
-        "remaining": len(pending) - done,
+        "analyzers": len(versions),
+        "units_total": units_total,
+        "completed_before": completed_before,
+        "quarantined_before": quarantined_before,
+        "pending_before": units_total - completed_before,
+        "accepted": accepted,
+        "quarantined": quarantined,
+        "model_calls": model_calls,
+        "remaining": units_total - completed_before - processed,
         "target": target,
     }
 
@@ -400,6 +595,11 @@ def main() -> None:
     ap.add_argument("--fleet", choices=("mu", "cc"), required=True)
     ap.add_argument("--session", required=True, help="exact normalized session key")
     ap.add_argument("--cls", default="false_success", help="one rubric class")
+    ap.add_argument(
+        "--pointwise-profile",
+        action="store_true",
+        help="run approved pointwise classes per chunk and performative_closing on the final chunk",
+    )
     ap.add_argument(
         "--required-provider", help="trusted provider alias; fail closed (required to judge)"
     )
@@ -428,6 +628,15 @@ def main() -> None:
         _turns, _chunks, plan = session_plan(
             con, args.fleet, args.session, args.max_chunk_bytes, args.max_tool_chars
         )
+        if args.pointwise_profile:
+            plan.update(
+                {
+                    "pointwise_analyzers": list(POINTWISE_CLASSES),
+                    "final_chunk_analyzers": list(FINAL_CHUNK_CLASSES),
+                    "deferred_session_wide": list(SESSION_WIDE_CLASSES),
+                    "units_total": len(_chunks) * len(POINTWISE_CLASSES) + len(FINAL_CHUNK_CLASSES),
+                }
+            )
         print(json.dumps(plan, sort_keys=True))
         return
     if not args.required_provider:
@@ -447,6 +656,7 @@ def main() -> None:
             args.timeout,
             args.limit_chunks,
             args.role,
+            pointwise_profile=args.pointwise_profile,
         )
     finally:
         store.close()
