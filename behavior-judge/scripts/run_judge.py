@@ -36,7 +36,8 @@ JUDGE = os.path.join(HERE, "..", "judge")
 
 
 def class_rubric(cls):
-    text = open(os.path.join(JUDGE, "rubric.md")).read()
+    with open(os.path.join(JUDGE, "rubric.md")) as f:
+        text = f.read()
     for blk in text.split("\n## "):
         if blk.strip().startswith(cls):
             return "## " + blk.strip()
@@ -251,7 +252,8 @@ def verify_evidence(verdict, transcript_path):
     def norm(s):
         return " ".join(str(s).split())
 
-    hay = norm(open(transcript_path, errors="ignore").read())
+    with open(transcript_path, errors="ignore") as f:
+        hay = norm(f.read())
     ev = verdict.get("evidence") or []
     verdict["n_evidence_verified"] = sum(
         1 for e in ev if isinstance(e, dict) and e.get("quote") and norm(e["quote"]) in hay

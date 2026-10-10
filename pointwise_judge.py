@@ -44,6 +44,7 @@ POINTWISE_CLASSES = (
     "false_success",
     "map_as_terrain",
     "scope_overreach",
+    "correction_overgeneralization",
     "dismissiveness",
     "outcome_prediction",
 )

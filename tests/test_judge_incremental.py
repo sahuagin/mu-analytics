@@ -3,6 +3,7 @@ code, the reason reaches the log per rank, and the run's closing line counts ver
 written against expected (mu-qmnoo). Hermetic — no model, no dispatcher, no store."""
 
 import importlib.util
+import json
 import os
 import sys
 import unittest
@@ -75,6 +76,24 @@ class AttemptKind(unittest.TestCase):
         self.assertIn("rubric one", u1)
         self.assertIn("rubric two", u2)
         self.assertNotEqual(u1, u2)
+
+    def test_correction_overgeneralization_has_balanced_calibration_cases(self):
+        rubric = run_judge.class_rubric("correction_overgeneralization")
+        self.assertIn("situational correction", rubric)
+        self.assertIn("durable rule", rubric)
+        path = os.path.join(
+            ROOT,
+            "behavior-judge",
+            "calibration",
+            "correction_overgeneralization.json",
+        )
+        with open(path) as f:
+            cases = json.load(f)
+        self.assertEqual(len(cases), 10)
+        self.assertEqual(sum(case["expected"] is True for case in cases), 5)
+        self.assertEqual(sum(case["expected"] is False for case in cases), 5)
+        self.assertEqual(len({case["id"] for case in cases}), len(cases))
+        self.assertTrue(all(case["transcript"].startswith("[001]") for case in cases))
 
 
 class ClassifyFailure(unittest.TestCase):
