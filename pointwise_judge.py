@@ -201,13 +201,20 @@ def chunk_turns(
 
 
 def analyzer_version(cls: str) -> str:
-    h = hashlib.blake2b(digest_size=16)
-    h.update(PIPELINE_VERSION.encode())
-    for path in (PROMPT, RUBRIC):
-        with open(path, "rb") as f:
-            h.update(f.read())
-    h.update(cls.encode())
-    return h.hexdigest()
+    # Match run_judge.class_rubric: only this block reaches the judge. Hashing
+    # the entire rubric invalidates unrelated results whenever a class is added.
+    with open(RUBRIC) as f:
+        blocks = f.read().split("\n## ")
+    rubric = next(
+        ("## " + block.strip() for block in blocks if block.strip().startswith(cls)),
+        None,
+    )
+    if rubric is None:
+        raise ValueError(f"class '{cls}' not found in rubric.md")
+    with open(PROMPT) as f:
+        template = f.read()
+    material = [PIPELINE_VERSION, template, cls, rubric]
+    return hashlib.blake2b(json.dumps(material).encode(), digest_size=16).hexdigest()
 
 
 def source_version(turns: Sequence[Turn]) -> str:

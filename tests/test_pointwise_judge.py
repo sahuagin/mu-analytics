@@ -3,6 +3,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import fixtures
 
@@ -16,6 +17,34 @@ class TestPointwiseJudge(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
+
+    def test_analyzer_version_tracks_only_effective_class_inputs(self):
+        rubric = os.path.join(self.tmp.name, "rubric.md")
+        prompt = os.path.join(self.tmp.name, "prompt.txt")
+
+        def write(path, text):
+            with open(path, "w") as f:
+                f.write(text)
+
+        base = "# Rubrics\n\n## false_success\nOriginal rule.\n"
+        write(rubric, base)
+        write(prompt, "Judge {CLASS_RUBRIC}")
+        with patch.object(pw, "RUBRIC", rubric), patch.object(pw, "PROMPT", prompt):
+            original = pw.analyzer_version("false_success")
+            write(rubric, base + "\n## new_detector\nNew rule.\n")
+            self.assertEqual(original, pw.analyzer_version("false_success"))
+            write(rubric, base + "\n## new_detector\nChanged rule.\n")
+            self.assertEqual(original, pw.analyzer_version("false_success"))
+            write(rubric, base.replace("Original", "Revised"))
+            self.assertNotEqual(original, pw.analyzer_version("false_success"))
+            write(rubric, base)
+            write(prompt, "Updated judge {CLASS_RUBRIC}")
+            self.assertNotEqual(original, pw.analyzer_version("false_success"))
+            write(prompt, "Judge {CLASS_RUBRIC}")
+            with patch.object(pw, "PIPELINE_VERSION", "new-pipeline"):
+                self.assertNotEqual(original, pw.analyzer_version("false_success"))
+            with self.assertRaises(ValueError):
+                pw.analyzer_version("unknown_class")
 
     def test_loads_one_session_from_existing_projection(self):
         turns = pw.load_turns(self.con, "mu", "txdaemon:s1")
