@@ -1,3 +1,5 @@
+import hashlib
+import importlib.util
 import json
 import os
 import sqlite3
@@ -45,6 +47,23 @@ class TestPointwiseJudge(unittest.TestCase):
                 self.assertNotEqual(original, pw.analyzer_version("false_success"))
             with self.assertRaises(ValueError):
                 pw.analyzer_version("unknown_class")
+
+    def test_analyzer_version_matches_judge_selected_rubric(self):
+        spec = importlib.util.spec_from_file_location("version_test_judge", pw.JUDGE)
+        assert spec is not None and spec.loader is not None
+        judge = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(judge)
+        with open(pw.PROMPT) as f:
+            template = f.read()
+        for cls in pw.POINTWISE_CLASSES + pw.FINAL_CHUNK_CLASSES + pw.SESSION_WIDE_CLASSES:
+            with self.subTest(cls=cls):
+                # Use the actual dispatcher's extraction, not a second test parser.
+                rubric = judge.class_rubric(cls)
+                material = [pw.PIPELINE_VERSION, template, cls, rubric]
+                expected = hashlib.blake2b(
+                    json.dumps(material).encode(), digest_size=16
+                ).hexdigest()
+                self.assertEqual(pw.analyzer_version(cls), expected)
 
     def test_loads_one_session_from_existing_projection(self):
         turns = pw.load_turns(self.con, "mu", "txdaemon:s1")

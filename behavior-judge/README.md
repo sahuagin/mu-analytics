@@ -30,6 +30,25 @@ python3 scripts/run_judge.py --transcript t.txt --cls dismissiveness
 python3 scripts/run_judge_batch.py --manifest sessions.tsv --out results.jsonl
 ```
 
+## Pointwise result versions
+
+The root-level `pointwise_judge.py` / `pointwise_driver.py` store results per
+session chunk, analyzer, analyzer version, and model target. Analyzer versions
+hash the pipeline version, shared prompt template, class identifier, and the
+**selected class rubric**, matching the rubric used by `run_judge.py`.
+Adding or editing a different class therefore does not invalidate completed
+results for unchanged analyzers. Changes to the selected rubric, shared prompt,
+or pipeline version do require reprocessing.
+
+**Transition from whole-file rubric hashes:** this changes the hash format once.
+Existing rows are retained, but their old versions do not match the new keys;
+they are not automatically reused. There is no automatic historical migration.
+Before running a large backfill, account for this one-time reprocessing, or
+perform a separately reviewed migration that proves the old and new effective
+analyzer inputs are equivalent. Do not blindly relabel historical results as
+current. The new class-scoped behavior applies to results keyed with the new
+format.
+
 ## Scope
 This is the **generic methodology + detectors + survey of public prior art**. It contains **no
 session logs, no transcripts, no operator data, and no defensive-tooling config** — by design
