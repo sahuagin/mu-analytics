@@ -20,6 +20,34 @@ class TestPointwiseJudge(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_tool_truncation_is_explicit_and_counts_characters(self):
+        for kind in ("tool_call", "tool_result"):
+            with self.subTest(kind=kind):
+                turn = pw.Turn(7, 1, kind, "bash", False, "é" * 12)
+                rendered = pw._render_turn(turn, 5)
+                self.assertIn("retained 5 of 12 characters", rendered)
+                self.assertIn("omitted text is unknown", rendered)
+                self.assertTrue(rendered.endswith("é" * 5))
+                self.assertNotIn("é" * 6, rendered)
+
+    def test_complete_tool_records_have_no_truncation_label(self):
+        for kind in ("tool_call", "tool_result"):
+            turn = pw.Turn(7, 1, kind, "bash", False, "abcde")
+            for limit in (5, 6):
+                self.assertNotIn("renderer:", pw._render_turn(turn, limit))
+        empty = pw.Turn(7, 1, "tool_result", "bash", False, "")
+        self.assertEqual(pw._render_turn(empty, 1200), "[001] TOOL_RESULT(ok): (empty result)")
+
+    def test_user_text_is_not_capped_as_tool_evidence(self):
+        turn = pw.Turn(7, 1, "user_message", None, None, "abcdefghij")
+        self.assertEqual(pw._render_turn(turn, 3), "[001] USER: abcdefghij")
+
+    def test_marked_tool_chunks_still_respect_byte_budget(self):
+        turn = pw.Turn(7, 1, "tool_result", "bash", False, "é" * 200)
+        chunks = pw.chunk_turns([turn], 128, 100)
+        self.assertTrue(all(len(c.text.encode("utf-8")) <= 128 for c in chunks))
+        self.assertIn("renderer: truncated", chunks[0].text)
+
     def test_analyzer_version_tracks_only_effective_class_inputs(self):
         rubric = os.path.join(self.tmp.name, "rubric.md")
         prompt = os.path.join(self.tmp.name, "prompt.txt")
