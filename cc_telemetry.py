@@ -37,14 +37,13 @@ import re
 import sys
 from datetime import datetime
 
-# Typed Anthropic response projection. The protocol crate parses the message;
-# the binding returns native Python values, not serialized JSON to parse again.
-# Provider-to-mu field mapping remains here in the consumer.
+# The session bridge receives original JSONL lines and delegates assistant
+# messages to the Anthropic protocol. Python maps its native values to events.
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
 try:
-    import mu_anthropic_py as _MA
+    import mu_bridge as _MB
 except Exception:
-    _MA = None
+    _MB = None
 
 _PARSE = {"typed": 0, "fallback": 0}
 # Visibility counters (printed at the end) — the anti-silent-drop guard.
@@ -134,31 +133,27 @@ def _stringify_result(content) -> str:
     return json.dumps(content, separators=(",", ":"))
 
 
-def _normalize_assistant(
-    m: dict, *, source: str = "<memory>", line_number: int | None = None
-) -> dict[str, object]:
-    """Turn one cc assistant message into the pieces of an AssistantMessageEvent.
-
-    Returns {model, stop_reason, usage, blocks, tool_uses, raw_usage}. `blocks`
-    are mu-core ContentBlock JSON; `tool_uses` drive standalone ToolCall events;
-    `raw_usage` feeds the UNCHANGED session-sum (cost parity)."""
-    project = getattr(_MA, "response_message_to_py", None)
-    if project is not None:
+def _parse_record(line: str, *, source: str, line_number: int) -> dict:
+    parse = getattr(_MB, "parse_record_to_py", None)
+    if parse is not None:
         try:
-            m = project(json.dumps(m))
+            record = parse(line)
         except ValueError as exc:
-            # The original message stays in its source record. Only this message
-            # takes the Python path; do not discard already parsed siblings.
-            _PARSE["fallback"] += 1
-            print(
-                f"  parser fallback: {source}:{line_number}: {exc}",
-                file=sys.stderr,
-            )
+            print(f"  parser fallback: {source}:{line_number}: {exc}", file=sys.stderr)
         else:
-            _PARSE["typed"] += 1
-    else:
+            if record.get("type") == "assistant":
+                _PARSE["typed"] += 1
+            return record
+    record = json.loads(line)
+    if not isinstance(record, dict):
+        raise ValueError("session record must be an object")
+    if record.get("type") == "assistant":
         _PARSE["fallback"] += 1
+    return record
 
+
+def _normalize_assistant(m: dict) -> dict[str, object]:
+    """Map an already parsed provider message to analytics event fields."""
     model = m.get("model") or "unknown"
     stop = _normalize_stop(m.get("stop_reason"))
     raw_usage = m.get("usage") or {}
@@ -236,15 +231,14 @@ def convert_session(path: str):
 
     with open(path) as f:
         for line_number, line in enumerate(f, 1):
-            line = line.strip()
-            if not line:
+            if not line.strip():
                 continue
             try:
-                o = json.loads(line)
-            except json.JSONDecodeError as exc:
+                o = _parse_record(line, source=path, line_number=line_number)
+            except ValueError as exc:
                 # Experiment captures can contain wrapper output; distinguish the
                 # known footer from actual JSON failures, without hiding either.
-                if line == "[loop-guard] saw result event; exiting cleanly":
+                if line.strip() == "[loop-guard] saw result event; exiting cleanly":
                     _SKIPPED_TYPES["experiment_loop_guard_footer"] += 1
                 else:
                     _SKIPPED_TYPES["invalid_json_record"] += 1
@@ -258,7 +252,7 @@ def convert_session(path: str):
             msg = o.get("message")
             if t == "assistant" and isinstance(msg, dict):
                 mid = msg.get("id") or f"_n{len(asst_idx)}"
-                norm = _normalize_assistant(msg, source=path, line_number=line_number)
+                norm = _normalize_assistant(msg)
                 assistants[mid] = (norm.get("raw_usage") or {}, norm.get("model") or "unknown")
                 rec = {"type": "assistant", "ts": ts, **norm}
                 if mid in asst_idx:
@@ -562,8 +556,8 @@ def main():
     print("  kinds: " + ", ".join(f"{k}={n}" for k, n in kinds.most_common()))
     note = (
         ""
-        if getattr(_MA, "response_message_to_py", None) is not None
-        else "  [native response projection unavailable — Python fallback; rebuild the binding]"
+        if getattr(_MB, "parse_record_to_py", None) is not None
+        else "  [native session parser unavailable — Python fallback; rebuild the binding]"
     )
     print(f"  parse: {_PARSE['typed']} typed (mu-anthropic), {_PARSE['fallback']} fallback{note}")
     if _UNMAPPED_BLOCKS:

@@ -97,52 +97,41 @@ class TestCcTelemetry(unittest.TestCase):
         cct._SKIPPED_TYPES.clear()
         cct._PARSE["typed"] = cct._PARSE["fallback"] = 0
 
-    def test_native_projection_is_consumed_not_just_validated(self):
-        projected = {
-            "id": "projected",
-            "model": "projected-model",
-            "stop_reason": "tool_use",
-            "content": [
-                {"type": "tool_use", "id": "call", "name": "Read", "input": {"n": 2**64 - 1}}
-            ],
-            "usage": {"input_tokens": 23, "future_counter": 7},
-        }
-        binding = SimpleNamespace(response_message_to_py=Mock(return_value=projected))
-        with patch.object(cct, "_MA", binding):
-            norm = cct._normalize_assistant({"id": "original"})
-        self.assertEqual(norm["model"], "projected-model")
-        self.assertEqual(
-            norm["tool_uses"],
-            [{"id": "call", "name": "Read", "input": {"n": 2**64 - 1}}],
-        )
-        self.assertEqual(norm["raw_usage"], projected["usage"])
+    def test_native_parser_receives_original_line_without_python_roundtrip(self):
+        line = ' {"type": "assistant", "message": {"id": "original"}} '
+        projected = {"type": "assistant", "message": {"model": "projected"}}
+        binding = SimpleNamespace(parse_record_to_py=Mock(return_value=projected))
+        with patch.object(cct, "_MB", binding):
+            with patch.object(cct.json, "loads", side_effect=AssertionError("Python decode")):
+                with patch.object(cct.json, "dumps", side_effect=AssertionError("Python encode")):
+                    record = cct._parse_record(line, source="fixture", line_number=1)
+                    norm = cct._normalize_assistant(record["message"])
+        self.assertEqual(norm["model"], "projected")
         self.assertEqual(cct._PARSE, {"typed": 1, "fallback": 0})
-        binding.response_message_to_py.assert_called_once()
+        binding.parse_record_to_py.assert_called_once_with(line)
 
-    def test_rejected_message_falls_back_locally_then_typed_parsing_resumes(self):
-        good = _session_records()[1]["message"]
-        bad = _session_records()[3]["message"]
+    def test_rejected_record_falls_back_locally_then_native_parsing_resumes(self):
+        record = _session_records()[1]
+        line = json.dumps(record)
         binding = SimpleNamespace(
-            response_message_to_py=Mock(side_effect=[good, ValueError("bad field"), good])
+            parse_record_to_py=Mock(side_effect=[record, ValueError("bad field"), record])
         )
         errors = io.StringIO()
-        with patch.object(cct, "_MA", binding), redirect_stderr(errors):
-            first = cct._normalize_assistant(good, source="fixture.jsonl", line_number=1)
-            fallback = cct._normalize_assistant(bad, source="fixture.jsonl", line_number=2)
-            last = cct._normalize_assistant(good, source="fixture.jsonl", line_number=3)
-        self.assertEqual(first, last)
-        self.assertEqual(fallback["raw_usage"], bad["usage"])
+        with patch.object(cct, "_MB", binding), redirect_stderr(errors):
+            results = [
+                cct._parse_record(line, source="fixture.jsonl", line_number=n) for n in (1, 2, 3)
+            ]
+        self.assertEqual(results, [record] * 3)
         self.assertEqual(cct._PARSE, {"typed": 2, "fallback": 1})
         self.assertIn("fixture.jsonl:2: bad field", errors.getvalue())
-        self.assertEqual(binding.response_message_to_py.call_count, 3)
 
     def test_unexpected_binding_error_is_not_hidden_as_protocol_fallback(self):
         binding = SimpleNamespace(
-            response_message_to_py=Mock(side_effect=RuntimeError("binding defect"))
+            parse_record_to_py=Mock(side_effect=RuntimeError("binding defect"))
         )
-        with patch.object(cct, "_MA", binding):
+        with patch.object(cct, "_MB", binding):
             with self.assertRaisesRegex(RuntimeError, "binding defect"):
-                cct._normalize_assistant({})
+                cct._parse_record("{}", source="fixture", line_number=1)
         self.assertEqual(cct._PARSE["fallback"], 0)
 
     def test_wrapper_footer_and_invalid_json_are_distinguished(self):
@@ -153,7 +142,7 @@ class TestCcTelemetry(unittest.TestCase):
                 for record in _session_records():
                     f.write(json.dumps(record) + "\n")
             errors = io.StringIO()
-            with patch.object(cct, "_MA", None), redirect_stderr(errors):
+            with patch.object(cct, "_MB", None), redirect_stderr(errors):
                 result = cct.convert_session(path)
             self.assertIsNotNone(result)
             self.assertEqual(cct._SKIPPED_TYPES["experiment_loop_guard_footer"], 1)
