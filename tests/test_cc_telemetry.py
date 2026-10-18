@@ -2,11 +2,15 @@
 cc transcript into the whole mu-core SessionEvent stream with no information
 loss. Contract: specs/architecture/cc-event-mapping.md (mu repo)."""
 
+import io
 import json
 import os
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -90,6 +94,69 @@ class TestCcTelemetry(unittest.TestCase):
         cct._UNMAPPED_BLOCKS.clear()
         cct._SKIPPED_TYPES.clear()
         cct._PARSE["typed"] = cct._PARSE["fallback"] = 0
+
+    def test_native_projection_is_consumed_not_just_validated(self):
+        projected = {
+            "id": "projected",
+            "model": "projected-model",
+            "stop_reason": "tool_use",
+            "content": [
+                {"type": "tool_use", "id": "call", "name": "Read", "input": {"n": 2**64 - 1}}
+            ],
+            "usage": {"input_tokens": 23, "future_counter": 7},
+        }
+        binding = SimpleNamespace(response_message_to_py=Mock(return_value=projected))
+        with patch.object(cct, "_MA", binding):
+            norm = cct._normalize_assistant({"id": "original"})
+        self.assertEqual(norm["model"], "projected-model")
+        self.assertEqual(
+            norm["tool_uses"],
+            [{"id": "call", "name": "Read", "input": {"n": 2**64 - 1}}],
+        )
+        self.assertEqual(norm["raw_usage"], projected["usage"])
+        self.assertEqual(cct._PARSE, {"typed": 1, "fallback": 0})
+        binding.response_message_to_py.assert_called_once()
+
+    def test_rejected_message_falls_back_locally_then_typed_parsing_resumes(self):
+        good = _session_records()[1]["message"]
+        bad = _session_records()[3]["message"]
+        binding = SimpleNamespace(
+            response_message_to_py=Mock(side_effect=[good, ValueError("bad field"), good])
+        )
+        errors = io.StringIO()
+        with patch.object(cct, "_MA", binding), redirect_stderr(errors):
+            first = cct._normalize_assistant(good, source="fixture.jsonl", line_number=1)
+            fallback = cct._normalize_assistant(bad, source="fixture.jsonl", line_number=2)
+            last = cct._normalize_assistant(good, source="fixture.jsonl", line_number=3)
+        self.assertEqual(first, last)
+        self.assertEqual(fallback["raw_usage"], bad["usage"])
+        self.assertEqual(cct._PARSE, {"typed": 2, "fallback": 1})
+        self.assertIn("fixture.jsonl:2: bad field", errors.getvalue())
+        self.assertEqual(binding.response_message_to_py.call_count, 3)
+
+    def test_unexpected_binding_error_is_not_hidden_as_protocol_fallback(self):
+        binding = SimpleNamespace(
+            response_message_to_py=Mock(side_effect=RuntimeError("binding defect"))
+        )
+        with patch.object(cct, "_MA", binding):
+            with self.assertRaisesRegex(RuntimeError, "binding defect"):
+                cct._normalize_assistant({})
+        self.assertEqual(cct._PARSE["fallback"], 0)
+
+    def test_wrapper_footer_and_invalid_json_are_distinguished(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "experiment.jsonl")
+            with open(path, "w") as f:
+                f.write("\n[loop-guard] saw result event; exiting cleanly\nnot json\n")
+                for record in _session_records():
+                    f.write(json.dumps(record) + "\n")
+            errors = io.StringIO()
+            with patch.object(cct, "_MA", None), redirect_stderr(errors):
+                result = cct.convert_session(path)
+            self.assertIsNotNone(result)
+            self.assertEqual(cct._SKIPPED_TYPES["experiment_loop_guard_footer"], 1)
+            self.assertEqual(cct._SKIPPED_TYPES["invalid_json_record"], 1)
+            self.assertIn(f"{path}:3:", errors.getvalue())
 
     def _convert(self):
         with tempfile.TemporaryDirectory() as d:

@@ -37,12 +37,9 @@ import re
 import sys
 from datetime import datetime
 
-# Typed Anthropic parser (pyo3 wheel built from crates/providers/mu-anthropic-py
-# -> lib/mu_anthropic_py.*.so). The SAME typed front door the proxy/drift job
-# uses: is_valid_response_message() returns False when the wire shape no longer
-# matches the typed model (Anthropic changed the spec) OR the message isn't
-# Anthropic-shaped (openrouter cc account). We count those for an integrity
-# signal; content/usage are read from the raw record (complete for our mapping).
+# Typed Anthropic response projection. The protocol crate parses the message;
+# the binding returns native Python values, not serialized JSON to parse again.
+# Provider-to-mu field mapping remains here in the consumer.
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
 try:
     import mu_anthropic_py as _MA
@@ -137,20 +134,28 @@ def _stringify_result(content) -> str:
     return json.dumps(content, separators=(",", ":"))
 
 
-def _normalize_assistant(m: dict) -> dict[str, object]:
+def _normalize_assistant(
+    m: dict, *, source: str = "<memory>", line_number: int | None = None
+) -> dict[str, object]:
     """Turn one cc assistant message into the pieces of an AssistantMessageEvent.
 
     Returns {model, stop_reason, usage, blocks, tool_uses, raw_usage}. `blocks`
     are mu-core ContentBlock JSON; `tool_uses` drive standalone ToolCall events;
     `raw_usage` feeds the UNCHANGED session-sum (cost parity)."""
-    if _MA is not None:
+    project = getattr(_MA, "response_message_to_py", None)
+    if project is not None:
         try:
-            if _MA.is_valid_response_message(json.dumps(m)):
-                _PARSE["typed"] += 1
-            else:
-                _PARSE["fallback"] += 1
-        except Exception:
+            m = project(json.dumps(m))
+        except ValueError as exc:
+            # The original message stays in its source record. Only this message
+            # takes the Python path; do not discard already parsed siblings.
             _PARSE["fallback"] += 1
+            print(
+                f"  parser fallback: {source}:{line_number}: {exc}",
+                file=sys.stderr,
+            )
+        else:
+            _PARSE["typed"] += 1
     else:
         _PARSE["fallback"] += 1
 
@@ -230,13 +235,20 @@ def convert_session(path: str):
     first_ts = last_ts = None
 
     with open(path) as f:
-        for line in f:
+        for line_number, line in enumerate(f, 1):
             line = line.strip()
             if not line:
                 continue
             try:
                 o = json.loads(line)
-            except Exception:
+            except json.JSONDecodeError as exc:
+                # Experiment captures can contain wrapper output; distinguish the
+                # known footer from actual JSON failures, without hiding either.
+                if line == "[loop-guard] saw result event; exiting cleanly":
+                    _SKIPPED_TYPES["experiment_loop_guard_footer"] += 1
+                else:
+                    _SKIPPED_TYPES["invalid_json_record"] += 1
+                    print(f"  invalid JSON record: {path}:{line_number}: {exc}", file=sys.stderr)
                 continue
             ts = iso_ms(o.get("timestamp", "")) if o.get("timestamp") else 0
             if ts:
@@ -246,7 +258,7 @@ def convert_session(path: str):
             msg = o.get("message")
             if t == "assistant" and isinstance(msg, dict):
                 mid = msg.get("id") or f"_n{len(asst_idx)}"
-                norm = _normalize_assistant(msg)
+                norm = _normalize_assistant(msg, source=path, line_number=line_number)
                 assistants[mid] = (norm.get("raw_usage") or {}, norm.get("model") or "unknown")
                 rec = {"type": "assistant", "ts": ts, **norm}
                 if mid in asst_idx:
@@ -548,7 +560,11 @@ def main():
             f"skipped={n_skipped} + denied={n_denied}; discovery/ingest drift"
         )
     print("  kinds: " + ", ".join(f"{k}={n}" for k, n in kinds.most_common()))
-    note = "" if _MA else "  [mu_anthropic_py NOT importable — all fallback; build the wheel]"
+    note = (
+        ""
+        if getattr(_MA, "response_message_to_py", None) is not None
+        else "  [native response projection unavailable — Python fallback; rebuild the binding]"
+    )
     print(f"  parse: {_PARSE['typed']} typed (mu-anthropic), {_PARSE['fallback']} fallback{note}")
     if _UNMAPPED_BLOCKS:
         print(
