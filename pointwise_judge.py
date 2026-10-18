@@ -118,6 +118,13 @@ def _render_turn(turn: Turn, max_tool_chars: int) -> str:
     else:
         label = f"TOOL_RESULT({'err' if turn.is_error else 'ok'})"
         body = (turn.body or "(empty result)")[:max_tool_chars]
+    if turn.kind in ("tool_call", "tool_result"):
+        original = turn.body or ("(empty result)" if turn.kind == "tool_result" else "")
+        if len(body) < len(original):
+            label += (
+                f" [renderer: truncated; retained {len(body)} of {len(original)} characters;"
+                " omitted text is unknown]"
+            )
     return f"[{turn.number:03}] {label}: {body}"
 
 
