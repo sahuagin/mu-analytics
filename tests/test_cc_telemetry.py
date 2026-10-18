@@ -149,6 +149,21 @@ class TestCcTelemetry(unittest.TestCase):
             self.assertEqual(cct._SKIPPED_TYPES["invalid_json_record"], 1)
             self.assertIn(f"{path}:3:", errors.getvalue())
 
+    @unittest.skipUnless(hasattr(cct._MB, "parse_record_to_py"), "build-session-parser required")
+    def test_built_bridge_full_conversion_without_python_json_roundtrip(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "native.jsonl")
+            with open(path, "w") as stream:
+                for record in _session_records():
+                    stream.write(json.dumps(record) + "\n")
+            with patch.object(cct.json, "loads", side_effect=AssertionError("Python decode")):
+                with patch.object(cct.json, "dumps", side_effect=AssertionError("Python encode")):
+                    native = cct.convert_session(path)
+            self.assertEqual(cct._PARSE, {"typed": 2, "fallback": 0})
+            with patch.object(cct, "_MB", None):
+                fallback = cct.convert_session(path)
+            self.assertEqual(native, fallback)
+
     def _convert(self):
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "sess-abc.jsonl")
