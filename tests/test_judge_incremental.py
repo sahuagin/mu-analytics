@@ -6,7 +6,9 @@ import importlib.util
 import json
 import os
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -24,6 +26,29 @@ def _load_run_judge():
 
 
 run_judge = _load_run_judge()
+
+
+class DispatcherSelection(unittest.TestCase):
+    def test_explicit_dispatcher_wins_over_installed_default(self):
+        with tempfile.NamedTemporaryFile() as dispatcher:
+            with mock.patch.dict(os.environ, {"AGENT_DISPATCH_LIB": dispatcher.name}):
+                self.assertEqual(run_judge._dispatch_lib(), dispatcher.name)
+
+    def test_invalid_override_fails_instead_of_falling_back(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for value in ("", directory, os.path.join(directory, "missing.sh")):
+                with self.subTest(value=value):
+                    with mock.patch.dict(os.environ, {"AGENT_DISPATCH_LIB": value}):
+                        with self.assertRaisesRegex(ValueError, "AGENT_DISPATCH_LIB"):
+                            run_judge._dispatch_lib()
+
+    def test_unset_retains_installed_dispatcher_preference(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with mock.patch.object(run_judge.os.path, "exists", return_value=True):
+                self.assertEqual(
+                    run_judge._dispatch_lib(),
+                    os.path.expanduser("~/.local/bin/agent-dispatch.sh"),
+                )
 
 
 class AttemptKind(unittest.TestCase):

@@ -123,6 +123,12 @@ def constrain_ladder(ladder, required_provider=None, single_rank=False):
 def _dispatch_lib():
     """Path to the canonical dispatcher (mu/scripts/lib/agent-dispatch.sh), preferring
     the ~/.local/bin symlink so this isn't coupled to the mu repo's location."""
+    override = os.environ.get("AGENT_DISPATCH_LIB")
+    if override is not None:
+        full = os.path.abspath(os.path.expanduser(override))
+        if not override or not os.path.isfile(full):
+            raise ValueError("AGENT_DISPATCH_LIB must name an existing dispatcher file")
+        return full
     for p in (
         "~/.local/bin/agent-dispatch.sh",
         "~/src/public_github/mu/scripts/lib/agent-dispatch.sh",
