@@ -267,3 +267,31 @@ This selects both the dispatcher and runtime without changing their installed
 copies. Tests may inject a full path by mocking the lookup function; no additional
 runtime configuration is needed. Provider/role and transcript-egress restrictions
 are unchanged.
+
+### Structured-evidence calibration
+
+`judge_evidence.collect_evidence()` reads the existing DuckDB `ev` view for a
+specific fleet, session, source file, and assistant claim event. It returns full
+linked tool-call/result fields from before the claim, labels missing or ambiguous
+links, and distinguishes an error flag from proof of completion. Supply `call_ids`
+for a targeted lookup; the selection is applied in SQL. Multiple source files
+require an explicit filename. The packet records its scope so a partial window
+cannot be mistaken for the whole session.
+
+The fixed synthetic cases in
+`behavior-judge/calibration/structured-evidence-cases.json` compare transcript-only
+judging with the same transcript plus these facts:
+
+```sh
+./run calibrate_evidence.py --require-provider <local-provider> --out /private/results
+```
+
+The `judge` role selects the model; the required provider pins execution to the
+chosen local service. Each result preserves the input hash, analyzer version,
+expected label, model verdict, classification correctness, and exact-quote
+verification counts. Repeating the same command reuses matching saved results;
+use a fresh output directory for a changed model, rubric, or input. This small
+synthetic suite measures specific distinctions, not general detector accuracy.
+Verify zero tool schemas in the runtime logs before treating a run as a
+transcript-only calibration. The existing `PATH` selection above can select a
+verified workspace runtime without changing the installed executable.

@@ -34,6 +34,12 @@ def collect_evidence(con, fleet, session, claim_id, *, filename=None, call_ids=N
     ).fetchall()
     if claims != [("assistant_message_event",)]:
         raise ValueError("claim must identify one assistant message in the selected source")
+    selected = None if call_ids is None else set(call_ids)
+    selection_sql = ""
+    parameters = scope + [claim_id]
+    if selected is not None:
+        selection_sql = " AND json_extract_string(payload, '$.call_id') IN (SELECT unnest(?))"
+        parameters.append(sorted(selected))
     rows = con.execute(
         """SELECT id, ts, kind,
                   json_extract_string(payload, '$.call_id'),
@@ -43,11 +49,11 @@ def collect_evidence(con, fleet, session, claim_id, *, filename=None, call_ids=N
                   try_cast(json_extract(payload, '$.is_error') AS BOOLEAN)
            FROM ev
            WHERE fleet = ? AND session = ? AND filename = ? AND id < ?
-             AND kind IN ('tool_call', 'tool_result')
-           ORDER BY id""",
-        scope + [claim_id],
+             AND kind IN ('tool_call', 'tool_result')"""
+        + selection_sql
+        + " ORDER BY id",
+        parameters,
     ).fetchall()
-    selected = None if call_ids is None else set(call_ids)
     groups = {}
     unlinked = []
     seen_ids = set()
