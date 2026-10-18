@@ -93,6 +93,13 @@ def main():
             version = pw.analyzer_version(case["class"])
             if path.exists():
                 result = json.loads(path.read_text())
+                if (
+                    result["expected"] != case["expected"]
+                    or result["label_reason"] != case["reason"]
+                ):
+                    raise ValueError(
+                        "existing results use different labels; choose a fresh output directory"
+                    )
                 if (result["input_hash"], result["target"], result["analyzer_version"]) != (
                     digest,
                     target,
