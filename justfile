@@ -91,16 +91,18 @@ _build-pyo3 crate module:
     cp "$mu_repo/target/release/lib{{module}}.so" "lib/{{module}}$ext"
     {{py}} -c "import sys; sys.path.insert(0, 'lib'); import {{module}}; print('OK: {{module}} -> lib/{{module}}$ext')"
 
-# Typed Anthropic message parser — cc_telemetry.py's typed front door (cc_telemetry.py:40),
-# vs the hand-rolled fallback.
+# Standalone Anthropic response projection.
 build-anthropic-parser: (_build-pyo3 "mu-anthropic-py" "mu_anthropic_py")
+
+# Original Claude JSONL records, including typed assistant messages.
+build-session-parser: (_build-pyo3 "mu-bridge" "mu_bridge")
 
 # Typed SessionEvent read layer — analytics read typed, schema-validated events
 # (scans.py / degradation) instead of re-parsing raw JSONL.
 build-events-parser: (_build-pyo3 "mu-events-py" "mu_events_py")
 
-# Build both typed pyo3 parsers into lib/.
-build-parsers: build-anthropic-parser build-events-parser
+# Build the typed pyo3 parsers into lib/.
+build-parsers: build-anthropic-parser build-events-parser build-session-parser
 
 # ── deploy ─────────────────────────────────────────────────────────────────
 
