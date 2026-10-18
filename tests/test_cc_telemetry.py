@@ -32,6 +32,7 @@ def _session_records():
             "timestamp": "2026-06-15T10:00:01.000Z",
             "message": {
                 "id": "msg_1",
+                "type": "message",
                 "role": "assistant",
                 "model": "claude-opus-4-8",
                 "stop_reason": "tool_use",
@@ -77,6 +78,7 @@ def _session_records():
             "timestamp": "2026-06-15T10:00:03.000Z",
             "message": {
                 "id": "msg_2",
+                "type": "message",
                 "role": "assistant",
                 "model": "claude-opus-4-8",
                 "stop_reason": "end_turn",
