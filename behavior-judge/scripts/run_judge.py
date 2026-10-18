@@ -25,6 +25,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -121,22 +122,13 @@ def constrain_ladder(ladder, required_provider=None, single_rank=False):
 
 
 def _dispatch_lib():
-    """Path to the canonical dispatcher (mu/scripts/lib/agent-dispatch.sh), preferring
-    the ~/.local/bin symlink so this isn't coupled to the mu repo's location."""
-    override = os.environ.get("AGENT_DISPATCH_LIB")
-    if override is not None:
-        full = os.path.abspath(os.path.expanduser(override))
-        if not override or not os.path.isfile(full):
-            raise ValueError("AGENT_DISPATCH_LIB must name an existing dispatcher file")
-        return full
-    for p in (
-        "~/.local/bin/agent-dispatch.sh",
-        "~/src/public_github/mu/scripts/lib/agent-dispatch.sh",
-    ):
-        full = os.path.expanduser(p)
-        if os.path.exists(full):
-            return full
-    return os.path.expanduser("~/.local/bin/agent-dispatch.sh")
+    """Resolve the installed dispatcher through ordinary executable PATH lookup."""
+    path = shutil.which("agent-dispatch.sh")
+    if path is None:
+        raise FileNotFoundError(
+            "agent-dispatch.sh not found on PATH; install it or add its directory to PATH"
+        )
+    return os.path.abspath(path)
 
 
 def _last_line(text):
@@ -157,7 +149,7 @@ def dispatch(provider, model, sys_file, transcript_path, timeout):
     raw provider error). Empty on a clean call. Before this the dispatcher's stderr was
     captured and dropped, so a whole cron run could fail every signature and the log
     only ever said "no target produced a verdict" (mu-qmnoo)."""
-    script = '. "$AGENT_DISPATCH_LIB" && agent_dispatch "$1" "$2" "$3"'
+    script = '. "$1" && agent_dispatch "$2" "$3" "$4"'
     # The model's own stderr (mu's notices, the provider's error line) goes to ERRLOG,
     # not to the dispatcher's stderr; a per-call file keeps this call's tail separable
     # and leaves nothing behind in /tmp.
@@ -169,7 +161,6 @@ def dispatch(provider, model, sys_file, transcript_path, timeout):
     # ladder wants only subscription/local targets; a metered fallback is never correct.
     env = {
         **{k: v for k, v in os.environ.items() if not k.startswith("ANTHROPIC")},
-        "AGENT_DISPATCH_LIB": _dispatch_lib(),
         "SYSPROMPT": sys_file,
         "TOOLS": "",  # pure read-transcript -> verdict; no read/grep/bash tools
         "TIMEOUT": str(timeout),
@@ -178,7 +169,7 @@ def dispatch(provider, model, sys_file, transcript_path, timeout):
     try:
         try:
             r = subprocess.run(
-                ["sh", "-c", script, "sh", provider, model, transcript_path],
+                ["sh", "-c", script, "sh", _dispatch_lib(), provider, model, transcript_path],
                 env=env,
                 capture_output=True,
                 text=True,

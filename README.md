@@ -247,3 +247,23 @@ cost-panel health check on the host: `python3 admin_usage.py` → `"ok": true`.
 Built in one session 2026-06-14 (mu-analytics). The mu-side analytics it consumes
 is spec **mu-042** (`crates/mu-coding/src/analytics/`, `crates/mu-core/src/forensics.rs`).
 The typed parser is `crates/providers/mu-anthropic{,-py}`.
+
+### Judge dispatcher lookup
+
+Role-based judging resolves `agent-dispatch.sh` through `PATH`, just like `mu`
+and `agent-role`. The dispatcher must be an executable file (an executable-target
+symlink is fine); the judge sources its resolved absolute path. Missing dispatchers
+fail with an installation/PATH diagnostic; there is no hardcoded checkout fallback
+or `AGENT_DISPATCH_LIB` configuration override.
+
+For isolated development, prepend the matching directories to the invocation's
+`PATH`, for example:
+
+```sh
+PATH="/path/to/mu/scripts/lib:/path/to/mu/target/debug:$PATH" ./run pointwise_driver.py --help
+```
+
+This selects both the dispatcher and runtime without changing their installed
+copies. Tests may inject a full path by mocking the lookup function; no additional
+runtime configuration is needed. Provider/role and transcript-egress restrictions
+are unchanged.
