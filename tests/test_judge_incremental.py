@@ -29,26 +29,54 @@ run_judge = _load_run_judge()
 
 
 class DispatcherSelection(unittest.TestCase):
-    def test_explicit_dispatcher_wins_over_installed_default(self):
-        with tempfile.NamedTemporaryFile() as dispatcher:
-            with mock.patch.dict(os.environ, {"AGENT_DISPATCH_LIB": dispatcher.name}):
-                self.assertEqual(run_judge._dispatch_lib(), dispatcher.name)
-
-    def test_invalid_override_fails_instead_of_falling_back(self):
+    def test_path_order_selects_dispatcher_and_ignores_old_override(self):
         with tempfile.TemporaryDirectory() as directory:
-            for value in ("", directory, os.path.join(directory, "missing.sh")):
-                with self.subTest(value=value):
-                    with mock.patch.dict(os.environ, {"AGENT_DISPATCH_LIB": value}):
-                        with self.assertRaisesRegex(ValueError, "AGENT_DISPATCH_LIB"):
-                            run_judge._dispatch_lib()
+            paths = []
+            for name in ("first", "second"):
+                folder = os.path.join(directory, name)
+                os.mkdir(folder)
+                path = os.path.join(folder, "agent-dispatch.sh")
+                with open(path, "w") as f:
+                    f.write("#!/bin/sh\n")
+                os.chmod(path, 0o700)
+                paths.append(path)
+            for order in (paths, paths[::-1]):
+                env = {
+                    "PATH": os.pathsep.join(os.path.dirname(p) for p in order),
+                    "AGENT_DISPATCH_LIB": "/must/not/be/used",
+                }
+                with mock.patch.dict(os.environ, env):
+                    self.assertEqual(run_judge._dispatch_lib(), order[0])
 
-    def test_unset_retains_installed_dispatcher_preference(self):
-        with mock.patch.dict(os.environ, {}, clear=True):
-            with mock.patch.object(run_judge.os.path, "exists", return_value=True):
-                self.assertEqual(
-                    run_judge._dispatch_lib(),
-                    os.path.expanduser("~/.local/bin/agent-dispatch.sh"),
+    def test_missing_or_nonexecutable_dispatcher_fails_loudly(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.dict(os.environ, {"PATH": directory}):
+                with self.assertRaisesRegex(FileNotFoundError, "not found on PATH"):
+                    run_judge._dispatch_lib()
+                path = os.path.join(directory, "agent-dispatch.sh")
+                with open(path, "w") as f:
+                    f.write("#!/bin/sh\n")
+                os.chmod(path, 0o600)
+                with self.assertRaises(FileNotFoundError):
+                    run_judge._dispatch_lib()
+
+    def test_dispatch_sources_full_path_with_spaces_without_env_override(self):
+        with tempfile.TemporaryDirectory(prefix="judge dispatch ") as directory:
+            path = os.path.join(directory, "dispatcher.sh")
+            with open(path, "w") as f:
+                f.write(
+                    'agent_dispatch() { [ "$TOOLS" = "" ] || return 7; '
+                    'printf "%s|%s|%s" "$1" "$2" "$3"; }\n'
                 )
+            # Explicit dependency injection is test-only, not ambient configuration.
+            with mock.patch.object(run_judge, "_dispatch_lib", return_value=path):
+                with mock.patch.dict(os.environ, {"AGENT_DISPATCH_LIB": "/wrong"}):
+                    text, rc, reason = run_judge.dispatch(
+                        "fake-provider", "fake-model", "/system prompt", "/transcript path", 5
+                    )
+            self.assertEqual(
+                (text, rc, reason), ("fake-provider|fake-model|/transcript path", 0, "")
+            )
 
 
 class AttemptKind(unittest.TestCase):
