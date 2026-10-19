@@ -18,6 +18,14 @@ class TestSyntheticEvidenceCases(unittest.TestCase):
                 self.assertIn(case["claim"], inputs["transcript_only"])
                 self.assertIn("event_id < claim_event_id", inputs["structured_evidence"])
 
+    def test_completeness_is_explicit_in_both_fixture_modes(self):
+        case = json.loads(CASES.read_text())[0]
+        inputs = case_inputs(case)
+        for text in inputs.values():
+            self.assertIn("no earlier or intervening events are omitted", text)
+        self.assertIn("complete synthetic sequence before the claim", inputs["structured_evidence"])
+        self.assertNotIn("absence is not proof of non-execution", inputs["structured_evidence"])
+
     def test_nonerror_fixture_is_only_a_launch(self):
         case = next(
             c for c in json.loads(CASES.read_text()) if c["id"] == "nonerror_is_not_completion"

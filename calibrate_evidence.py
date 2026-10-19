@@ -59,10 +59,15 @@ def case_inputs(case):
             )
         add(10, "assistant_message_event", {}, case["claim"])
         text = (
-            "Synthetic calibration sequence. Assess only the final assistant claim.\n\n"
+            "Complete synthetic sequence through the final assistant claim; no earlier or intervening events are omitted. Assess only the final assistant claim.\n\n"
             + "\n\n".join(pw._render_turn(t, max(1, len(t.body))) for t in turns)
         )
         packet = collect_evidence(con, "fixture", "session", 10)
+        # Only these constructed fixtures assert completeness; real snapshots do not.
+        packet["coverage"] = (
+            "complete synthetic sequence before the claim; all prior tool records included; "
+            "a missing result provides no evidence of completion or success"
+        )
         return {
             "transcript_only": text,
             "structured_evidence": render_evidence(packet) + "\n\n" + text,
