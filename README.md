@@ -275,8 +275,11 @@ specific fleet, session, source file, and assistant claim event. It returns full
 linked tool-call/result fields from before the claim, labels missing or ambiguous
 links, and distinguishes an error flag from proof of completion. Supply `call_ids`
 for a targeted lookup; the selection is applied in SQL. Multiple source files
-require an explicit filename. The packet records its scope so a partial window
-cannot be mistaken for the whole session.
+require an explicit filename. Packets report included/omitted prior record counts;
+source completeness stays unknown for real snapshots, even when every recorded
+tool is selected. A successful write or echoed assertion is not independent
+verification of its content, and launcher timeouts do not prove background failure.
+These annotations support review; they do not guarantee a judge respects the limits.
 
 The fixed synthetic cases in
 `behavior-judge/calibration/structured-evidence-cases.json` compare transcript-only
