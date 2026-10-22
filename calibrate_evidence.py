@@ -64,6 +64,7 @@ def case_inputs(case):
         )
         packet = collect_evidence(con, "fixture", "session", 10)
         # Only these constructed fixtures assert completeness; real snapshots do not.
+        packet["selection_coverage"]["source_completeness"] = "complete synthetic fixture"
         packet["coverage"] = (
             "complete synthetic sequence before the claim; all prior tool records included; "
             "a missing result provides no evidence of completion or success"

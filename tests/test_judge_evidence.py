@@ -75,6 +75,54 @@ class TestRecordedEvidence(unittest.TestCase):
         self.assertEqual(packet["requested_ids_without_prior_records"], ["missing"])
         self.assertEqual(packet["tools"], [])
 
+    def test_selection_reports_omitted_followup_without_future_leakage(self):
+        self.add(1, "tool_call", {"call_id": "launch"})
+        self.add(2, "tool_result", {"call_id": "launch", "is_error": True, "content": "timeout"})
+        self.add(3, "tool_call", {"call_id": "check"})
+        self.add(4, "tool_result", {"call_id": "check", "content": "background job passed"})
+        self.add(11, "tool_result", {"call_id": "future", "content": "later evidence"})
+        self.add(5, "tool_result", {"call_id": "other"}, session="other")
+        packet = self.get(call_ids=["launch"])
+        self.assertEqual(
+            packet["selection_coverage"],
+            {
+                "prior_tool_records_in_source": 4,
+                "included_tool_records": 2,
+                "omitted_tool_records": 2,
+                "all_prior_recorded_tools_included": False,
+                "source_completeness": "unknown",
+            },
+        )
+        self.assertNotIn("background job passed", render_evidence(packet))
+        full = self.get()
+        self.assertIn("background job passed", render_evidence(full))
+        self.assertNotIn("later evidence", render_evidence(full))
+        self.assertTrue(full["selection_coverage"]["all_prior_recorded_tools_included"])
+        self.assertEqual(full["selection_coverage"]["source_completeness"], "unknown")
+
+    def test_empty_selection_reports_omissions_including_unlinked_records(self):
+        self.add(1, "tool_call", {"name": "unknown"})
+        self.add(2, "tool_result", {"call_id": "a"})
+        packet = self.get(call_ids=[])
+        self.assertEqual(packet["selection_coverage"]["omitted_tool_records"], 2)
+        self.assertEqual(packet["selection_coverage"]["included_tool_records"], 0)
+
+    def test_recording_claim_is_not_verifying_claim(self):
+        claim = "all tests passed"
+        self.add(
+            1,
+            "tool_call",
+            {"call_id": "write", "name": "memory_update", "arguments": {"content": claim}},
+        )
+        self.add(2, "tool_result", {"call_id": "write", "content": claim, "is_error": False})
+        packet = self.get()
+        self.assertEqual(packet["tools"][0]["record_status"], "result_reports_non_error")
+        self.assertIn("not independent verification", packet["interpretation"])
+        self.assertIn(
+            "A successful write confirms the write, not the truth", packet["interpretation"]
+        )
+        self.assertIn(claim, render_evidence(packet))
+
     def test_reject_nonassistant_claim_and_duplicate_event_ids(self):
         with self.assertRaises(ValueError):
             collect_evidence(self.con, "mu", "s", 99)
