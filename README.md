@@ -293,8 +293,16 @@ The `judge` role selects the model; the required provider pins execution to the
 chosen local service. Each result preserves the input hash, analyzer version,
 expected label, model verdict, classification correctness, and exact-quote
 verification counts. Repeating the same command reuses matching saved results;
-use a fresh output directory for a changed model, rubric, or input. This small
-synthetic suite measures specific distinctions, not general detector accuracy.
+use a fresh output directory for a changed model, rubric, or input. Failed attempts
+are preserved and reused too: any judge error makes the command exit nonzero,
+including on resume. Use a fresh output directory for an intentional retry; there
+is no automatic retry spending. Result files are replaced atomically.
+This small synthetic suite measures specific distinctions, not general detector accuracy.
+The shared `false_success` rubric now requires declared completeness for positives
+based solely on missing records. In incomplete real excerpts, absence remains
+unresolved rather than proof of a false claim; direct contradictory evidence can
+still substantiate a finding. This deliberately trades absence-based recall for
+fewer excerpt-boundary false positives and is not validated by the synthetic scores.
 Verify zero tool schemas in the runtime logs before treating a run as a
 transcript-only calibration. The existing `PATH` selection above can select a
 verified workspace runtime without changing the installed executable.

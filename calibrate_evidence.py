@@ -9,6 +9,7 @@ import argparse
 import hashlib
 import json
 import os
+import tempfile
 from pathlib import Path
 
 import duckdb
@@ -75,6 +76,20 @@ def case_inputs(case):
         }
     finally:
         con.close()
+
+
+def write_result(path, result):
+    """Replace a result atomically; interrupted writes never truncate saved attempts."""
+    content = json.dumps(result, indent=2)
+    with tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False) as f:
+        temporary = Path(f.name)
+        try:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
 
 def main():
@@ -146,7 +161,7 @@ def main():
                     result.update(
                         status="error", error_type=type(exc).__name__, diagnostic=str(exc)
                     )
-                path.write_text(json.dumps(result, indent=2))
+                write_result(path, result)
             report.append(result)
             print(
                 json.dumps(
@@ -167,9 +182,12 @@ def main():
             "correct": sum(r.get("classification_correct", False) for r in rows),
             "fully_verified": sum(r.get("all_evidence_verified", False) for r in rows),
         }
-    (args.out / "summary.json").write_text(json.dumps(summary, indent=2))
+    write_result(args.out / "summary.json", summary)
     print(json.dumps(summary), flush=True)
+    # Errors remain immutable observations; retries need a fresh output directory.
+    # A completed harness invocation is not a successful calibration run.
+    return 1 if any(r["status"] != "ok" for r in report) else 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

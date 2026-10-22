@@ -67,8 +67,6 @@ def collect_evidence(con, fleet, session, claim_id, *, filename=None, call_ids=N
         if event_id in seen_ids:
             raise ValueError("duplicate event IDs in selected source")
         seen_ids.add(event_id)
-        if selected is not None and call_id not in selected:
-            continue
         record = {"event_id": event_id, "timestamp_ms": ts, "kind": kind}
         if kind == "tool_call":
             record.update(name=name, arguments_json=arguments)

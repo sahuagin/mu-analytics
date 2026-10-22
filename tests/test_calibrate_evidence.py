@@ -1,7 +1,10 @@
 import json
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
-from calibrate_evidence import CASES, case_inputs
+from calibrate_evidence import CASES, case_inputs, main, write_result
 
 
 class TestSyntheticEvidenceCases(unittest.TestCase):
@@ -25,6 +28,36 @@ class TestSyntheticEvidenceCases(unittest.TestCase):
             self.assertIn("no earlier or intervening events are omitted", text)
         self.assertIn("complete synthetic sequence before the claim", inputs["structured_evidence"])
         self.assertNotIn("absence is not proof of non-execution", inputs["structured_evidence"])
+
+    def test_errors_fail_run_and_resume_without_silent_retry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            argv = ["calibrate", "--out", directory, "--require-provider", "local", "--limit", "1"]
+            with (
+                patch("sys.argv", argv),
+                patch("calibrate_evidence.pw.resolve_target", return_value="local/test"),
+                patch(
+                    "calibrate_evidence.pw.judge_chunk", side_effect=RuntimeError("timeout")
+                ) as judge,
+                patch("builtins.print"),
+            ):
+                self.assertEqual(main(), 1)
+                self.assertEqual(judge.call_count, 2)
+                files = {p.name: p.read_bytes() for p in Path(directory).glob("*.json")}
+                self.assertEqual(main(), 1)
+                self.assertEqual(judge.call_count, 2)
+                self.assertEqual(
+                    files, {p.name: p.read_bytes() for p in Path(directory).glob("*.json")}
+                )
+
+    def test_atomic_result_failure_preserves_previous_result(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "result.json"
+            write_result(path, {"status": "old"})
+            with patch("calibrate_evidence.os.replace", side_effect=OSError("replace failed")):
+                with self.assertRaises(OSError):
+                    write_result(path, {"status": "new"})
+            self.assertEqual(json.loads(path.read_text()), {"status": "old"})
+            self.assertEqual(list(Path(directory).iterdir()), [path])
 
     def test_nonerror_fixture_is_only_a_launch(self):
         case = next(
