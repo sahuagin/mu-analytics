@@ -880,7 +880,7 @@ _TX_BODY = """CASE e.kind
             CASE WHEN json_type(json_extract(e.payload,'$.message.content')) = 'ARRAY'
                 THEN array_to_string(list_transform(
                     from_json(json_extract(e.payload,'$.message.content'), '["json"]'),
-                    x -> CASE WHEN json_extract_string(x,'$.type')='text'
+                    lambda x: CASE WHEN json_extract_string(x,'$.type')='text'
                               THEN json_extract_string(x,'$.text') END), chr(10))
                 ELSE json_extract_string(e.payload,'$.message.content')
             END

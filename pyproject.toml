@@ -7,7 +7,9 @@ requires-python = ">=3.11"
 # /usr/local/bin/python3.11 already imports duckdb); declared here for portability
 # / CI on other platforms. The sinks use stdlib sqlite3 (DuckDB's sqlite_scanner
 # has no freebsd_amd64 build), so duckdb is the only third-party runtime dep.
-dependencies = ["duckdb>=1.5"]
+# Pinned to the pkg version; CI installs the same (.github/workflows/ci.yml, two jobs).
+# Bump together and deliberately: an unpinned CI install pulled 2.0.0 and broke main (2026-11).
+dependencies = ["duckdb==1.5.5"]
 
 [project.optional-dependencies]
 # `cost.py` is a standalone polars diagnostic; the dashboard build path does not need it.

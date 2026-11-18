@@ -37,7 +37,7 @@ jobs:
       # ty is pre-1.0 and each release adds diagnostics — unpinned, main goes red
       # without any code change (happened 2026-08: 0.0.55 green, latest flags
       # panels.py). Pin to the known-green version; bump deliberately.
-      - run: pip install ty==0.0.55 duckdb
+      - run: pip install ty==0.0.55 duckdb==1.5.5
       - run: ty check
 
   test:
@@ -48,7 +48,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install duckdb
+      # duckdb pinned to the pkg version (see pyproject.toml).
+      - run: pip install duckdb==1.5.5
       - run: python -m unittest discover -s tests -v
 
   verify-claims:
