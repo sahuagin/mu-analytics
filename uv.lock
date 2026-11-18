@@ -262,7 +262,7 @@ ml = [
 
 [package.metadata]
 requires-dist = [
-    { name = "duckdb", specifier = ">=1.5" },
+    { name = "duckdb", specifier = "==1.5.5" },
     { name = "numpy", marker = "extra == 'ml'", specifier = ">=2" },
     { name = "polars", marker = "extra == 'cost'", specifier = ">=1.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
