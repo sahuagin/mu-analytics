@@ -7,7 +7,7 @@ requires-python = ">=3.11"
 # /usr/local/bin/python3.11 already imports duckdb); declared here for portability
 # / CI on other platforms. The sinks use stdlib sqlite3 (DuckDB's sqlite_scanner
 # has no freebsd_amd64 build), so duckdb is the only third-party runtime dep.
-# Pinned to the pkg version; CI installs the same (.github/workflows/ci.yml, two jobs).
+# Pinned to the pkg version; CI installs it from uv.lock (.github/workflows/ci.yml).
 # Bump together and deliberately: an unpinned CI install pulled 2.0.0 and broke main (2026-11).
 dependencies = ["duckdb==1.5.5"]
 
@@ -29,12 +29,12 @@ dev = ["pytest>=8", "ruff>=0.15", "ty"]
 # Script project: uv must never build/install mu-analytics itself.
 package = false
 # On the FreeBSD host the compiled deps come from pkg through the venv's
-# --system-site-packages; PyPI has no FreeBSD wheels for them, so uv must not
-# try to install its own copy (resolution still pins them in the lockfile via
-# other platforms' wheel metadata). Extras (cost/ml) are host-synced only with
-# an explicit --no-install-package for their packages — or not at all — until a
-# local wheel index exists. On Linux CI, wheels exist and none of this bites.
-no-install-package = ["duckdb"]
+# --system-site-packages; PyPI has no FreeBSD wheels for them. uv has no
+# [tool.uv] setting that skips installing a package (an earlier
+# `no-install-package` key here was rejected as unknown, which made uv ignore
+# this whole table), so a host `uv sync` must pass `--no-install-package duckdb`
+# (and the same for any extra's compiled deps) on the command line. On Linux CI,
+# wheels exist and `uv sync --frozen` installs everything from uv.lock.
 
 [tool.ruff]
 line-length = 100

@@ -43,7 +43,8 @@ migration orphaned the pinned interpreter's packages with no error anywhere).
 When pkg migrates its default python again: update the seed in `config.toml`,
 re-run the two commands above. `uv sync` is for Linux CI only — uv's resolver
 ignores system site-packages and would try to source-build the FreeBSD-wheel-less
-compiled deps (`[tool.uv] no-install-package` fences duckdb; see pyproject.toml).
+compiled deps. If you must run it on the host, pass `--no-install-package duckdb`
+(uv has no pyproject setting for this; see pyproject.toml).
 
 ---
 
