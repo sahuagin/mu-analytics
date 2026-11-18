@@ -13,44 +13,48 @@ concurrency:
 # Mirrors `just ci` (ruff format + lint, ty, unittest) + the verify-claims gate.
 # config.toml is gitignored; the modules fall back to config.example.toml, and the
 # tests are hermetic (synthetic event-log fixtures), so no real data is needed.
+#
+# Every tool and dependency version comes from uv.lock (`uv sync --frozen`), so CI
+# runs what the lockfile pins and nothing newer: unpinned installs have turned main
+# red with no code change twice (ty 2026-08, duckdb 2.0 2026-11). Python 3.12 is
+# the host's interpreter; requires-python (3.11) stays the compatibility floor.
+# duckdb is fenced from `uv sync` by [tool.uv] no-install-package (no FreeBSD
+# wheel on PyPI), so each job installs the locked duckdb version explicitly.
+env:
+  UV_PYTHON: "3.12"
+
 jobs:
   lint:
     name: ruff (format + lint)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - run: pip install ruff
-      - run: ruff format --check .
-      - run: ruff check .
+      - uses: astral-sh/setup-uv@v10.3.3
+      - run: uv sync --frozen --extra dev
+      - run: uv run --no-sync ruff format --check .
+      - run: uv run --no-sync ruff check .
 
   typecheck:
     name: ty check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      # ty is pre-1.0 and each release adds diagnostics — unpinned, main goes red
-      # without any code change (happened 2026-08: 0.0.55 green, latest flags
-      # panels.py). Pin to the known-green version; bump deliberately.
-      - run: pip install ty==0.0.55 duckdb==1.5.5
-      - run: ty check
+      - uses: astral-sh/setup-uv@v10.3.3
+      - run: uv sync --frozen --extra dev
+      - name: Install the locked duckdb
+        run: uv pip install "duckdb==$(uv run --no-sync python scripts/locked-version.py duckdb)"
+      - run: uv run --no-sync ty check
 
   test:
     name: unittest
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      # duckdb pinned to the pkg version (see pyproject.toml).
-      - run: pip install duckdb==1.5.5
-      - run: python -m unittest discover -s tests -v
+      - uses: astral-sh/setup-uv@v10.3.3
+      - run: uv sync --frozen
+      - name: Install the locked duckdb
+        run: uv pip install "duckdb==$(uv run --no-sync python scripts/locked-version.py duckdb)"
+      - run: uv run --no-sync python -m unittest discover -s tests -v
 
   verify-claims:
     name: verify-claims (per-commit)
