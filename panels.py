@@ -393,7 +393,7 @@ def frustration_signals(con, limit=400):
     import scans
 
     hit_rows, _all_rows, _totals = scans.scan_frustration(con)
-    rows = []
+    rows: list[dict] = []
     for ref, _win, hits, _n_user, markers, _started, ending in hit_rows:
         fleet = ref.split(":", 1)[0]
         abrupt = "frustrated" in str(ending)
@@ -808,10 +808,10 @@ def per_ask_sessions(con, n=12, asks_limit=30):
     for daemon, sid, rn, inp, o, cr, cw, gap_min in rows:
         by_session[(daemon, sid)].append((rn, inp, o, cr, cw, gap_min))
 
-    out = []
+    out: list[dict] = []
     for daemon, sid, model, last_ts in cand:
         rr = RATES.get(rate_key(model)) or RATES["claude-opus-4-8"]
-        asks = []
+        asks: list[dict] = []
         for rn, inp, o, cr, cw, gap_min in by_session.get((daemon, sid), []):
             cost = (
                 (inp or 0) * rr["input"]

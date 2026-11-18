@@ -18,8 +18,6 @@ concurrency:
 # runs what the lockfile pins and nothing newer: unpinned installs have turned main
 # red with no code change twice (ty 2026-08, duckdb 2.0 2026-11). Python 3.12 is
 # the host's interpreter; requires-python (3.11) stays the compatibility floor.
-# duckdb is fenced from `uv sync` by [tool.uv] no-install-package (no FreeBSD
-# wheel on PyPI), so each job installs the locked duckdb version explicitly.
 env:
   UV_PYTHON: "3.12"
 
@@ -41,8 +39,6 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v10.3.3
       - run: uv sync --frozen --extra dev
-      - name: Install the locked duckdb
-        run: uv pip install "duckdb==$(uv run --no-sync python scripts/locked-version.py duckdb)"
       - run: uv run --no-sync ty check
 
   test:
@@ -52,8 +48,6 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v10.3.3
       - run: uv sync --frozen
-      - name: Install the locked duckdb
-        run: uv pip install "duckdb==$(uv run --no-sync python scripts/locked-version.py duckdb)"
       - run: uv run --no-sync python -m unittest discover -s tests -v
 
   verify-claims:
