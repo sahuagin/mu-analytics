@@ -46,6 +46,11 @@ ignores system site-packages and would try to source-build the FreeBSD-wheel-les
 compiled deps. If you must run it on the host, pass `--no-install-package duckdb`
 (uv has no pyproject setting for this; see pyproject.toml).
 
+The host's duckdb should match the `pyproject.toml` pin (2.0.0, what pkg `latest`
+ships). If the host's pkg lags, put the pinned version in the venv from a wheelfs
+wheel instead of waiting: `wheelfs materialize duckdb -o <wheels> --pkg-dir <pkgs>`,
+then `uv pip install --python .venv/bin/python --no-index --find-links <wheels> duckdb==2.0.0`.
+
 ---
 
 ## Layout
