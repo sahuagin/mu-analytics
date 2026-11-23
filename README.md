@@ -224,6 +224,8 @@ Host runtime deps: `tq` (config reads, incl. `[anthropic].admin_key` for the cos
 panel) and the canonical `python3` + `duckdb` (the `py` var in the justfile). Quick
 cost-panel health check on the host: `python3 admin_usage.py` → `"ok": true`.
 
+Upgrading the host's python, compiled deps, or bindings: [ops/UPGRADE.md](ops/UPGRADE.md).
+
 ---
 
 ## Open / next
